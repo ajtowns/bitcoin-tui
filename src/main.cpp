@@ -75,18 +75,57 @@ static void apply_cookie(RpcAuth& auth, const std::string& path) {
 // ============================================================================
 // Application entry point
 // ============================================================================
-static int run(int argc, char* argv[]) {
-    using namespace ftxui;
-    RpcConfig        cfg;
-    Guarded<RpcAuth> auth;
-    int              refresh_secs = 5;
-    std::string      network      = "main";
-    std::string      cookie_file;
-    std::string      datadir;
-    bool             explicit_creds = false;
-    std::string      bitcoind_cmd;
-    bool             explicit_host = false;
+namespace {
+class Application {
+  private:
+    /* Thread safety:
+     *  - all variables shared across threads are declared here
+     *  - read-only variables are set in configure() before
+     *    threads start, then treated as const in run()
+     *  - read-write variables are either `mutable atomic`
+     *    or `mutable Guarded` to ensure safety
+     */
 
+    RpcConfig                cfg;
+    mutable Guarded<RpcAuth> auth;
+    int                      refresh_secs = 5;
+    std::string              network      = "main";
+    std::string              cookie_file;
+    std::string              datadir;
+    bool                     explicit_creds = false;
+    std::string              bitcoind_cmd;
+    bool                     explicit_host = false;
+    bool                     can_launch    = false;
+
+    // Shared state
+    mutable Guarded<AppState> state;
+    mutable std::atomic<bool> running{false};
+
+    // Connection overlay state (not a tab — shown when disconnected)
+    mutable std::atomic<bool>                 launch_in_flight{false};
+    mutable std::atomic<bool>                 launch_done{false};
+    mutable std::atomic<int>                  launch_exit_code{0};
+    mutable Guarded<std::vector<std::string>> launch_output;
+    mutable std::thread                       launch_thread;
+    mutable std::atomic<int>                  conn_overlay_sel{0};
+
+    // Configure from command line
+    int configure(int argc, char* argv[]);
+
+    // Run the application with thread-safe state
+    int run() const;
+
+  public:
+    static int run(int argc, char* argv[]) {
+        Application app;
+        int         rc = app.configure(argc, argv);
+        if (rc != 0)
+            return rc;
+        return app.run();
+    }
+};
+
+int Application::configure(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string arg  = argv[i];
         auto        next = [&]() -> std::string {
@@ -181,31 +220,24 @@ static int run(int argc, char* argv[]) {
         }
     }
 
-    bool can_launch = false;
     if (!bitcoind_cmd.empty()) {
         can_launch = true;
     } else if (!explicit_host) {
         bitcoind_cmd = find_bitcoind();
         can_launch   = !bitcoind_cmd.empty();
     }
+    return 0;
+}
 
-    // Shared state
-    Guarded<AppState> state;
+int Application::run() const {
+    using namespace ftxui;
 
-    // Connection overlay state (not a tab — shown when disconnected)
-    std::atomic<bool>                 launch_in_flight{false};
-    std::atomic<bool>                 launch_done{false};
-    std::atomic<int>                  launch_exit_code{0};
-    Guarded<std::vector<std::string>> launch_output;
-    std::thread                       launch_thread;
-    int                               conn_overlay_sel = 0;
+    auto screen = ScreenInteractive::Fullscreen();
+    running     = true;
 
     // Global search bar state
     std::string global_search_str;
     bool        global_search_active = false;
-
-    std::atomic<bool> running{true};
-    auto              screen = ScreenInteractive::Fullscreen();
 
     // Tab toggle
     std::vector<std::string> tab_labels = {"Dashboard", "Mempool", "Network", "Peers", "Tools"};
@@ -667,10 +699,11 @@ static int run(int argc, char* argv[]) {
 
     return 0;
 }
+} // anonymous namespace
 
 int main(int argc, char* argv[]) {
     try {
-        return run(argc, argv);
+        return Application::run(argc, argv);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "bitcoin-tui: %s\n", e.what());
         return 1;
