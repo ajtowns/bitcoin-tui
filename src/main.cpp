@@ -254,6 +254,8 @@ int Application::run() const {
         mempool_tab.trigger_search(q, sw, tab_index);
     });
 
+    std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
+
     auto layout = Container::Vertical({tab_toggle});
 
     auto renderer = Renderer(layout, [&]() -> Element {
@@ -261,26 +263,9 @@ int Application::run() const {
 
         auto oi = mempool_tab.overlay_info();
 
-        Element tab_content;
-        switch (tab_index) {
-        case 0:
-            tab_content = dashboard_tab.render(snap);
-            break;
-        case 1:
-            tab_content = mempool_tab.render(snap);
-            break;
-        case 2:
-            tab_content = network_tab.render(snap);
-            break;
-        case 3:
-            tab_content = peers_tab.render(snap);
-            break;
-        case 4:
-            tab_content = tools_tab.render(snap);
-            break;
-        default:
-            tab_content = text("Unknown tab");
-        }
+        Element tab_content = (tab_index < 0 || tab_index >= tabs.size())
+                                  ? text("Unknown tab")
+                                  : tabs[tab_index]->render(snap);
 
         // Status bar — left side
         Element status_left;
@@ -690,11 +675,9 @@ int Application::run() const {
     screen.Loop(event_handler);
 
     running = false;
-    dashboard_tab.join();
-    mempool_tab.join();
-    network_tab.join();
-    peers_tab.join();
-    tools_tab.join();
+    for (auto tab : tabs) {
+        tab->join();
+    }
     if (launch_thread.joinable())
         launch_thread.join();
     poll_thread.join();
