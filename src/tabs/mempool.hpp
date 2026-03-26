@@ -53,9 +53,11 @@ class MempoolTab : public Tab {
     int mempool_sel = -1;
 
   private:
-    mutable StdMutex           search_mtx_;
-    TxSearchState              search_state_ GUARDED_BY(search_mtx_);
-    std::vector<TxSearchState> search_history_ GUARDED_BY(search_mtx_);
-    std::atomic<bool>          search_in_flight_{false};
-    std::thread                search_thread_;
+    struct SearchData {
+        TxSearchState              state;
+        std::vector<TxSearchState> history;
+    };
+    mutable Guarded<SearchData> search_data_;
+    std::atomic<bool>           search_in_flight_{false};
+    std::thread                 search_thread_;
 };

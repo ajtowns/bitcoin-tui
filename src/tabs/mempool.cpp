@@ -21,17 +21,16 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
     search_in_flight_ = true;
     if (switch_tab)
         tab_index_out = 1;
-    {
-        STDLOCK(search_mtx_);
+    search_data_.update([&](auto& sd) {
         if (switch_tab) {
-            search_history_.clear();
-        } else if (!search_state_.txid.empty()) {
-            search_history_.push_back(search_state_);
+            sd.history.clear();
+        } else if (!sd.state.txid.empty()) {
+            sd.history.push_back(sd.state);
         }
-        search_state_           = TxSearchState{};
-        search_state_.txid      = query;
-        search_state_.searching = true;
-    }
+        sd.state           = TxSearchState{};
+        sd.state.txid      = query;
+        sd.state.searching = true;
+    });
     screen_.PostEvent(Event::Custom);
 
     if (search_thread_.joinable())
@@ -53,37 +52,31 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
         search_in_flight_ = false;
         if (!running_.load())
             return;
-        {
-            STDLOCK(search_mtx_);
-            search_state_ = result;
-        }
+        search_data_.update([&](auto& sd) { sd.state = result; });
         screen_.PostEvent(Event::Custom);
     });
 }
 
 MempoolOverlayInfo MempoolTab::overlay_info() const {
-    MempoolOverlayInfo oi;
-    STDLOCK(search_mtx_);
-    oi.visible = !search_state_.txid.empty();
-    oi.is_confirmed_tx =
-        oi.visible && search_state_.found && search_state_.confirmed && !search_state_.is_block;
-    int sel            = search_state_.io_selected;
-    int inputs_idx     = io_inputs_idx(search_state_);
-    int outputs_idx    = io_outputs_idx(search_state_);
-    oi.block_row_sel   = oi.is_confirmed_tx && sel == 0;
-    oi.inputs_row_sel  = oi.is_confirmed_tx && sel == inputs_idx && inputs_idx >= 0;
-    oi.outputs_row_sel = oi.is_confirmed_tx && sel == outputs_idx && outputs_idx >= 0;
-    oi.inputs_open     = oi.is_confirmed_tx && search_state_.inputs_overlay_open;
-    oi.outputs_open    = oi.is_confirmed_tx && search_state_.outputs_overlay_open;
-    return oi;
+    return search_data_.access([](const auto& sd) {
+        MempoolOverlayInfo oi;
+        oi.visible = !sd.state.txid.empty();
+        oi.is_confirmed_tx =
+            oi.visible && sd.state.found && sd.state.confirmed && !sd.state.is_block;
+        int sel            = sd.state.io_selected;
+        int inputs_idx     = io_inputs_idx(sd.state);
+        int outputs_idx    = io_outputs_idx(sd.state);
+        oi.block_row_sel   = oi.is_confirmed_tx && sel == 0;
+        oi.inputs_row_sel  = oi.is_confirmed_tx && sel == inputs_idx && inputs_idx >= 0;
+        oi.outputs_row_sel = oi.is_confirmed_tx && sel == outputs_idx && outputs_idx >= 0;
+        oi.inputs_open     = oi.is_confirmed_tx && sd.state.inputs_overlay_open;
+        oi.outputs_open    = oi.is_confirmed_tx && sd.state.outputs_overlay_open;
+        return oi;
+    });
 }
 
 Element MempoolTab::render(const AppState& snap) {
-    TxSearchState ss;
-    {
-        STDLOCK(search_mtx_);
-        ss = search_state_;
-    }
+    TxSearchState ss = search_data_.access([](const auto& sd) { return sd.state; });
 
     auto base = vbox({render_mempool(snap, mempool_sel), filler()}) | flex;
 
@@ -304,32 +297,25 @@ Element MempoolTab::render(const AppState& snap) {
 std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
     // Outputs sub-overlay
     {
-        bool outputs_open = false;
-        {
-            STDLOCK(search_mtx_);
-            outputs_open = search_state_.found && search_state_.confirmed &&
-                           !search_state_.is_block && search_state_.outputs_overlay_open;
-        }
+        bool outputs_open = search_data_.access([](const auto& sd) {
+            return sd.state.found && sd.state.confirmed && !sd.state.is_block &&
+                   sd.state.outputs_overlay_open;
+        });
         if (outputs_open) {
             if (event == Event::Escape) {
-                {
-                    STDLOCK(search_mtx_);
-                    search_state_.outputs_overlay_open = false;
-                }
+                search_data_.update([](auto& sd) { sd.state.outputs_overlay_open = false; });
                 screen_.PostEvent(Event::Custom);
                 return true;
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
-                {
-                    STDLOCK(search_mtx_);
-                    int n = static_cast<int>(search_state_.vout_list.size());
+                search_data_.update([&](auto& sd) {
+                    int n = static_cast<int>(sd.state.vout_list.size());
                     if (event == Event::ArrowDown)
-                        search_state_.output_overlay_sel =
-                            std::min(search_state_.output_overlay_sel + 1, n - 1);
+                        sd.state.output_overlay_sel =
+                            std::min(sd.state.output_overlay_sel + 1, n - 1);
                     else
-                        search_state_.output_overlay_sel =
-                            std::max(search_state_.output_overlay_sel - 1, -1);
-                }
+                        sd.state.output_overlay_sel = std::max(sd.state.output_overlay_sel - 1, -1);
+                });
                 screen_.PostEvent(Event::Custom);
                 return true;
             }
@@ -342,44 +328,36 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
     }
     // Inputs sub-overlay
     {
-        bool inputs_open = false;
-        {
-            STDLOCK(search_mtx_);
-            inputs_open = search_state_.found && search_state_.confirmed &&
-                          !search_state_.is_block && search_state_.inputs_overlay_open;
-        }
+        bool inputs_open = search_data_.access([](const auto& sd) {
+            return sd.state.found && sd.state.confirmed && !sd.state.is_block &&
+                   sd.state.inputs_overlay_open;
+        });
         if (inputs_open) {
             if (event == Event::Escape) {
-                {
-                    STDLOCK(search_mtx_);
-                    search_state_.inputs_overlay_open = false;
-                }
+                search_data_.update([](auto& sd) { sd.state.inputs_overlay_open = false; });
                 screen_.PostEvent(Event::Custom);
                 return true;
             }
             if (event == Event::ArrowDown || event == Event::ArrowUp) {
-                {
-                    STDLOCK(search_mtx_);
-                    int n = static_cast<int>(search_state_.vin_list.size());
+                search_data_.update([&](auto& sd) {
+                    int n = static_cast<int>(sd.state.vin_list.size());
                     if (event == Event::ArrowDown)
-                        search_state_.input_overlay_sel =
-                            std::min(search_state_.input_overlay_sel + 1, n - 1);
+                        sd.state.input_overlay_sel =
+                            std::min(sd.state.input_overlay_sel + 1, n - 1);
                     else
-                        search_state_.input_overlay_sel =
-                            std::max(search_state_.input_overlay_sel - 1, -1);
-                }
+                        sd.state.input_overlay_sel = std::max(sd.state.input_overlay_sel - 1, -1);
+                });
                 screen_.PostEvent(Event::Custom);
                 return true;
             }
             if (event == Event::Return) {
-                std::string query;
-                {
-                    STDLOCK(search_mtx_);
-                    int sel = search_state_.input_overlay_sel;
-                    if (sel >= 0 && sel < static_cast<int>(search_state_.vin_list.size()) &&
-                        !search_state_.vin_list[sel].is_coinbase)
-                        query = search_state_.vin_list[sel].txid;
-                }
+                std::string query = search_data_.access([](const auto& sd) -> std::string {
+                    int sel = sd.state.input_overlay_sel;
+                    if (sel >= 0 && sel < static_cast<int>(sd.state.vin_list.size()) &&
+                        !sd.state.vin_list[sel].is_coinbase)
+                        return sd.state.vin_list[sel].txid;
+                    return {};
+                });
                 if (!query.empty()) {
                     int dummy = 0;
                     trigger_search(query, false, dummy);
@@ -397,11 +375,7 @@ std::optional<bool> MempoolTab::handle_tx_overlay(const Event& event) {
 }
 
 bool MempoolTab::handle_navigation(const Event& event) {
-    bool has_overlay;
-    {
-        STDLOCK(search_mtx_);
-        has_overlay = !search_state_.txid.empty();
-    }
+    bool has_overlay = search_data_.access([](const auto& sd) { return !sd.state.txid.empty(); });
     if (has_overlay)
         return false;
 
@@ -459,18 +433,17 @@ bool MempoolTab::handle_navigation(const Event& event) {
 bool MempoolTab::handle_io_nav(const Event& event) {
     if (event != Event::ArrowDown && event != Event::ArrowUp)
         return false;
-    bool handled = false;
-    {
-        STDLOCK(search_mtx_);
-        if (search_state_.found && search_state_.confirmed && !search_state_.is_block) {
-            int max_sel = io_max_sel(search_state_);
+    bool handled = search_data_.update([&](auto& sd) {
+        if (sd.state.found && sd.state.confirmed && !sd.state.is_block) {
+            int max_sel = io_max_sel(sd.state);
             if (event == Event::ArrowDown)
-                search_state_.io_selected = std::min(search_state_.io_selected + 1, max_sel);
+                sd.state.io_selected = std::min(sd.state.io_selected + 1, max_sel);
             else
-                search_state_.io_selected = std::max(search_state_.io_selected - 1, -1);
-            handled = true;
+                sd.state.io_selected = std::max(sd.state.io_selected - 1, -1);
+            return true;
         }
-    }
+        return false;
+    });
     if (handled) {
         screen_.PostEvent(Event::Custom);
         return true;
@@ -483,25 +456,24 @@ bool MempoolTab::handle_enter(const Event& event) {
         return false;
     bool        open_inputs = false, open_outputs = false;
     std::string query;
-    {
-        STDLOCK(search_mtx_);
-        if (search_state_.found && search_state_.confirmed && !search_state_.is_block) {
-            int sel         = search_state_.io_selected;
-            int inputs_idx  = io_inputs_idx(search_state_);
-            int outputs_idx = io_outputs_idx(search_state_);
+    search_data_.update([&](auto& sd) {
+        if (sd.state.found && sd.state.confirmed && !sd.state.is_block) {
+            int sel         = sd.state.io_selected;
+            int inputs_idx  = io_inputs_idx(sd.state);
+            int outputs_idx = io_outputs_idx(sd.state);
             if (sel == inputs_idx && inputs_idx >= 0) {
-                search_state_.inputs_overlay_open = true;
-                search_state_.input_overlay_sel   = -1;
-                open_inputs                       = true;
+                sd.state.inputs_overlay_open = true;
+                sd.state.input_overlay_sel   = -1;
+                open_inputs                  = true;
             } else if (sel == outputs_idx && outputs_idx >= 0) {
-                search_state_.outputs_overlay_open = true;
-                search_state_.output_overlay_sel   = -1;
-                open_outputs                       = true;
+                sd.state.outputs_overlay_open = true;
+                sd.state.output_overlay_sel   = -1;
+                open_outputs                  = true;
             } else if (sel == 0) {
-                query = search_state_.blockhash;
+                query = sd.state.blockhash;
             }
         }
-    }
+    });
     if (open_inputs || open_outputs) {
         screen_.PostEvent(Event::Custom);
         return true;
@@ -517,18 +489,17 @@ bool MempoolTab::handle_enter(const Event& event) {
 bool MempoolTab::handle_escape(const Event& event) {
     if (event != Event::Escape)
         return false;
-    bool had_overlay = false;
-    {
-        STDLOCK(search_mtx_);
-        if (!search_history_.empty()) {
-            search_state_ = search_history_.back();
-            search_history_.pop_back();
-            had_overlay = true;
-        } else if (!search_state_.txid.empty()) {
-            search_state_ = TxSearchState{};
-            had_overlay   = true;
+    bool had_overlay = search_data_.update([](auto& sd) {
+        if (!sd.history.empty()) {
+            sd.state = sd.history.back();
+            sd.history.pop_back();
+            return true;
+        } else if (!sd.state.txid.empty()) {
+            sd.state = TxSearchState{};
+            return true;
         }
-    }
+        return false;
+    });
     if (had_overlay) {
         screen_.PostEvent(Event::Custom);
         return true;
