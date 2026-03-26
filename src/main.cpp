@@ -22,6 +22,7 @@
 #include "render.hpp"
 #include "rpc_client.hpp"
 #include "state.hpp"
+#include "tabs/dashboard.hpp"
 #include "tabs/mempool.hpp"
 #include "tabs/network.hpp"
 #include "tabs/peers.hpp"
@@ -245,10 +246,11 @@ int Application::run() const {
     auto                     tab_toggle = Toggle(&tab_labels, &tab_index);
 
     // Tab objects (mempool first — tools captures a reference to it via lambda)
-    MempoolTab mempool_tab(cfg, auth, screen, running, state);
-    NetworkTab network_tab(cfg, auth, screen, running, state);
-    PeersTab   peers_tab(cfg, auth, screen, running, state);
-    ToolsTab   tools_tab(cfg, auth, screen, running, state, [&](const std::string& q, bool sw) {
+    DashboardTab dashboard_tab(cfg, auth, screen, running, state);
+    MempoolTab   mempool_tab(cfg, auth, screen, running, state);
+    NetworkTab   network_tab(cfg, auth, screen, running, state);
+    PeersTab     peers_tab(cfg, auth, screen, running, state);
+    ToolsTab     tools_tab(cfg, auth, screen, running, state, [&](const std::string& q, bool sw) {
         mempool_tab.trigger_search(q, sw, tab_index);
     });
 
@@ -262,7 +264,7 @@ int Application::run() const {
         Element tab_content;
         switch (tab_index) {
         case 0:
-            tab_content = render_dashboard(snap);
+            tab_content = dashboard_tab.render(snap);
             break;
         case 1:
             tab_content = mempool_tab.render(snap);
@@ -688,6 +690,7 @@ int Application::run() const {
     screen.Loop(event_handler);
 
     running = false;
+    dashboard_tab.join();
     mempool_tab.join();
     network_tab.join();
     peers_tab.join();

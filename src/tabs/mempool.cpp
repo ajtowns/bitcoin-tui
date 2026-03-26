@@ -1,15 +1,98 @@
 #include "mempool.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+
+#include <ftxui/screen/terminal.hpp>
 
 #include "format.hpp"
 #include "render.hpp"
 #include "search.hpp"
 
 using namespace ftxui;
+
+static Element render_mempool(const AppState& s, int mempool_sel) {
+    auto stats_section = mempool_stats_box(s);
+
+    // Block visualization — vertical fill bars, one column per block.
+    Element blocks_section;
+    if (s.recent_blocks.empty()) {
+        blocks_section =
+            section_box("Recent Blocks", {text("  Fetching…") | color(Color::GrayDark)});
+    } else {
+        const int     BAR_HEIGHT = 6;
+        const int     COL_WIDTH  = 10;
+        const int64_t MAX_WEIGHT = 4'000'000LL;
+
+        // Determine animation phase.
+        bool anim_slide = s.block_anim_active && !s.block_anim_old.empty();
+
+        // During slide: render old blocks minus the last (it slides off the right edge).
+        const std::vector<BlockStat>& src = anim_slide ? s.block_anim_old : s.recent_blocks;
+        int                           num = static_cast<int>(src.size());
+        int max_cols   = std::max(1, (Terminal::Size().dimx - 4) / (COL_WIDTH + 1));
+        int max_render = std::min(anim_slide ? std::max(0, num - 1) : num, max_cols);
+
+        // Slide offset grows from 0 → (COL_WIDTH+1) chars over SLIDE_FRAMES frames.
+        int left_pad = 0;
+        if (anim_slide) {
+            double progress = (s.block_anim_frame + 1.0) / BLOCK_ANIM_SLIDE_FRAMES;
+            left_pad        = static_cast<int>(std::round(progress * (COL_WIDTH + 1)));
+        }
+
+        Elements block_cols;
+        for (int i = 0; i < max_render; ++i) {
+            const auto& b = src[i];
+            double fill   = b.total_weight > 0 ? std::min(1.0, static_cast<double>(b.total_weight) /
+                                                                   static_cast<double>(MAX_WEIGHT))
+                                               : 0.0;
+
+            Color bar_color = fill > 0.9   ? Color(Color::DarkOrange)
+                              : fill > 0.7 ? Color(Color::Yellow)
+                                           : Color(Color::Green);
+
+            int filled_rows = static_cast<int>(std::round(fill * BAR_HEIGHT));
+
+            Elements bar;
+            for (int r = 0; r < BAR_HEIGHT; ++r) {
+                bool is_filled = r >= (BAR_HEIGHT - filled_rows);
+                bar.push_back(is_filled ? text("██████████") | color(bar_color)
+                                        : text("░░░░░░░░░░") | color(Color::GrayDark));
+            }
+
+            if (!block_cols.empty())
+                block_cols.push_back(text(" "));
+
+            bool is_selected = (i == mempool_sel);
+            block_cols.push_back(
+                vbox({
+                    vbox(std::move(bar)),
+                    is_selected ? text(fmt_height(b.height)) | center | inverted | bold
+                                : text(fmt_height(b.height)) | center,
+                    text(fmt_int(b.txs) + " tx") | center | color(Color::GrayDark),
+                    text(fmt_bytes(b.total_size)) | center | color(Color::GrayDark),
+                    text(b.time > 0 ? fmt_time_ago(b.time) : "") | center | color(Color::GrayDark),
+                }) |
+                size(WIDTH, EQUAL, COL_WIDTH));
+        }
+
+        // Compose row: optional slide-offset pad on the left, then blocks.
+        Element blocks_row =
+            left_pad > 0 ? hbox({text(std::string(left_pad, ' ')), hbox(std::move(block_cols))})
+                         : hbox(std::move(block_cols));
+
+        blocks_section =
+            section_box("Recent Blocks", {text(""), hbox({text("  "), std::move(blocks_row)})});
+    }
+
+    return vbox({
+        stats_section,
+        blocks_section,
+    });
+}
 
 MempoolTab::MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
                        std::atomic<bool>& running, Guarded<AppState>& state)

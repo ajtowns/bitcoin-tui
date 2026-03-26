@@ -1,9 +1,129 @@
 #include "tools.hpp"
 
+#include <sstream>
+
 #include "format.hpp"
 #include "render.hpp"
 
 using namespace ftxui;
+
+static Element render_tools(const AppState& snap, const BroadcastState& bs, bool input_active,
+                            const std::string& hex_str, int tools_sel) {
+    // sel==1 is the result txid row (when success).
+    bool has_result_row = bs.has_result && bs.success;
+
+    // ── Broadcast section ────────────────────────────────────────────────────
+    auto menu_row = [](const std::string& label, const std::string& shortcut,
+                       bool selected) -> Element {
+        auto row =
+            hbox({text("  " + label) | flex, text(shortcut + "  ") | color(Color::GrayDark)});
+        return selected ? row | inverted : row;
+    };
+
+    Elements bcast_rows;
+    bcast_rows.push_back(text(""));
+    bcast_rows.push_back(menu_row("Broadcast", "[b]", tools_sel == 0 && !input_active));
+
+    if (!input_active && !bs.submitting) {
+        bcast_rows.push_back(text(""));
+        bcast_rows.push_back(
+            text("  Submits to your node, which relays the transaction to all connected") |
+            color(Color::GrayDark));
+        bcast_rows.push_back(text("  peers over the P2P network.") | color(Color::GrayDark));
+    }
+
+    if (input_active) {
+        bcast_rows.push_back(separator());
+        // Wrap hex across rows of 70 chars; all rows shown.
+        constexpr int            kHexCols = 70;
+        const auto&              h        = hex_str;
+        int                      total    = (int)h.size();
+        std::vector<std::string> chunks;
+        for (int off = 0; off < std::max(total, 1); off += kHexCols)
+            chunks.push_back(h.substr(off, std::min(kHexCols, total - off)));
+        if (chunks.empty())
+            chunks.push_back("");
+        for (int i = 0; i < (int)chunks.size(); ++i) {
+            bool is_last = i == (int)chunks.size() - 1;
+            auto prefix  = i == 0 && chunks.size() == 1
+                               ? text("  Hex  : ") | color(Color::GrayDark)
+                               : (i == 0 ? text("  Hex  : ") | color(Color::GrayDark)
+                                         : text("         ") | color(Color::GrayDark));
+            bcast_rows.push_back(hbox({
+                prefix,
+                text(chunks[i]) | color(Color::White),
+                is_last ? text("│") | color(Color::White) : text(""),
+                filler(),
+            }));
+        }
+        bcast_rows.push_back(text("  [Enter] submit  [Esc] cancel") | color(Color::GrayDark));
+    } else if (bs.submitting) {
+        bcast_rows.push_back(separator());
+        bcast_rows.push_back(text("  Broadcasting…") | color(Color::Yellow));
+    } else if (bs.has_result) {
+        bcast_rows.push_back(separator());
+        if (bs.success) {
+            bool txid_sel = (tools_sel == 1);
+            auto txid_row = hbox({
+                text("  ✓ ") | color(Color::Green) | bold,
+                text(bs.result_txid) | color(Color::White),
+                filler(),
+            });
+            bcast_rows.push_back(txid_sel ? txid_row | inverted : txid_row);
+        } else {
+            bcast_rows.push_back(text("  Error: ") | color(Color::Red) | bold);
+            // Word-wrap error at ~72 chars with consistent indent (newlines treated as spaces).
+            constexpr int      kErrCols   = 72;
+            constexpr auto     kIndent    = "  ";
+            constexpr int      kIndentLen = 2;
+            std::istringstream ss(bs.result_error);
+            std::string        word, cur = kIndent;
+            while (ss >> word) {
+                if ((int)cur.size() > kIndentLen &&
+                    (int)(cur.size() + 1 + word.size()) > kErrCols) {
+                    bcast_rows.push_back(text(cur) | color(Color::White));
+                    cur = kIndent;
+                }
+                if ((int)cur.size() > kIndentLen)
+                    cur += ' ';
+                cur += word;
+            }
+            if ((int)cur.size() > kIndentLen)
+                bcast_rows.push_back(text(cur) | color(Color::White));
+        }
+    }
+
+    auto bcast_section = section_box("Broadcast Transaction", bcast_rows);
+
+    // ── Private broadcast queue (only shown when non-empty) ─────────────────
+    Elements layout;
+    layout.push_back(bcast_section);
+
+    if (!snap.privbcast_txids.empty()) {
+        Elements queue_rows;
+        for (int i = 0; i < (int)snap.privbcast_txids.size(); ++i) {
+            queue_rows.push_back(hbox({
+                text("  ") | color(Color::GrayDark),
+                text(snap.privbcast_txids[i]) | color(Color::White),
+                filler(),
+            }));
+        }
+        layout.push_back(section_box("Private Broadcast Queue", queue_rows));
+    }
+
+    // ── Node control ────────────────────────────────────────────────────────
+    int      shutdown_idx = 1 + (has_result_row ? 1 : 0);
+    Elements node_rows;
+    node_rows.push_back(text(""));
+    node_rows.push_back(menu_row("Shutdown bitcoind & exit", "[Q]", tools_sel == shutdown_idx));
+    node_rows.push_back(text(""));
+    node_rows.push_back(text("  Sends RPC stop to Bitcoin Core, then exits the TUI.") |
+                        color(Color::GrayDark));
+    layout.push_back(section_box("Shutdown", node_rows));
+
+    layout.push_back(filler());
+    return vbox(std::move(layout)) | flex;
+}
 
 ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
                    std::atomic<bool>& running, Guarded<AppState>& state,
