@@ -3,13 +3,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <ftxui/component/component.hpp>
-#include <ftxui/component/component_base.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -19,7 +17,6 @@
 #include "format.hpp"
 #include "guarded.hpp"
 #include "poll.hpp"
-#include "render.hpp"
 #include "rpc_client.hpp"
 #include "state.hpp"
 #include "tabs/dashboard.hpp"

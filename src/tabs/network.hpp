@@ -1,15 +1,12 @@
 #pragma once
 
 #include <atomic>
-#include <mutex>
 #include <thread>
 #include <vector>
 
-#include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
 #include "guarded.hpp"
-#include "rpc_client.hpp"
 #include "state.hpp"
 #include "tabs/tab.hpp"
 

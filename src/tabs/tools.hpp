@@ -2,16 +2,13 @@
 
 #include <atomic>
 #include <functional>
-#include <mutex>
 #include <string>
 #include <thread>
 
 #include <ftxui/component/event.hpp>
-#include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
 #include "guarded.hpp"
-#include "rpc_client.hpp"
 #include "state.hpp"
 #include "tabs/tab.hpp"
 

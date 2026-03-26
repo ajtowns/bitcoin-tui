@@ -1,7 +1,5 @@
 #include "bitcoind.hpp"
 
-#include <array>
-#include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
 #include <sys/wait.h>
