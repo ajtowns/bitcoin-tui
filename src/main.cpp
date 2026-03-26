@@ -194,13 +194,12 @@ static int run(int argc, char* argv[]) {
     std::mutex state_mtx;
 
     // Connection overlay state (not a tab — shown when disconnected)
-    std::atomic<bool>        launch_in_flight{false};
-    std::atomic<bool>        launch_done{false};
-    int                      launch_exit_code = 0;
-    std::vector<std::string> launch_output;
-    std::mutex               launch_mtx;
-    std::thread              launch_thread;
-    int                      conn_overlay_sel = 0;
+    std::atomic<bool>                 launch_in_flight{false};
+    std::atomic<bool>                 launch_done{false};
+    std::atomic<int>                  launch_exit_code{0};
+    Guarded<std::vector<std::string>> launch_output;
+    std::thread                       launch_thread;
+    int                               conn_overlay_sel = 0;
 
     // Global search bar state
     std::string global_search_str;
@@ -387,12 +386,11 @@ static int run(int argc, char* argv[]) {
                                                              : launch_exit_code == 0 ? Color::Green
                                                                                      : Color::Red) |
                                                        bold);
-                                        {
-                                            std::lock_guard lock(launch_mtx);
-                                            for (auto& line : launch_output)
+                                        launch_output.access([&](const auto& lines) {
+                                            for (const auto& line : lines)
                                                 rows.push_back(paragraph("  " + line) |
                                                                color(Color::White));
-                                        }
+                                        });
                                         return vbox(std::move(rows));
                                     }
                                     return hbox({text(" Error   : ") | color(Color::GrayDark),
@@ -494,19 +492,13 @@ static int run(int argc, char* argv[]) {
                         !launch_done.load()) {
                         launch_in_flight = true;
                         launch_done      = false;
-                        {
-                            std::lock_guard launch_lock(launch_mtx);
-                            launch_output.clear();
-                        }
+                        launch_output.update([](auto& v) { v.clear(); });
                         if (launch_thread.joinable())
                             launch_thread.join();
                         launch_thread = std::thread([&] {
                             launch_exit_code = launch_bitcoind(
                                 bitcoind_cmd, datadir, network, [&](const std::string& line) {
-                                    {
-                                        std::lock_guard launch_lock(launch_mtx);
-                                        launch_output.push_back(line);
-                                    }
+                                    launch_output.update([&](auto& v) { v.push_back(line); });
                                     screen.PostEvent(Event::Custom);
                                 });
                             launch_in_flight = false;
