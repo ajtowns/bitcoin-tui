@@ -6,14 +6,10 @@
 // ============================================================================
 // RPC polling
 // ============================================================================
-void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
+void poll_rpc(RpcClient& rpc, Guarded<AppState>& state,
               const std::function<void()>& on_core_ready) {
     // Read cached tip height so we can skip re-fetching block stats when tip hasn't moved.
-    int64_t cached_tip = 0;
-    {
-        std::lock_guard lk(mtx);
-        cached_tip = state.blocks_fetched_at;
-    }
+    int64_t cached_tip = state.access([](const auto& s) { return s.blocks_fetched_at; });
 
     try {
         // ── Phase 1: fast calls ──────────────────────────────────────────────
@@ -25,42 +21,41 @@ void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
         int64_t new_tip = bc.value("blocks", 0LL);
 
         // Commit core state immediately so the UI can render before block stats arrive.
-        {
-            std::lock_guard lock(mtx);
-
+        // TODO: build peers list outside the lock to reduce hold time
+        state.update([&](auto& s) {
             // Blockchain
-            state.chain         = bc.value("chain", "—");
-            state.blocks        = bc.value("blocks", 0LL);
-            state.headers       = bc.value("headers", 0LL);
-            state.difficulty    = bc.value("difficulty", 0.0);
-            state.progress      = bc.value("verificationprogress", 0.0);
-            state.pruned        = bc.value("pruned", false);
-            state.ibd           = bc.value("initialblockdownload", false);
-            state.bestblockhash = bc.value("bestblockhash", "");
+            s.chain         = bc.value("chain", "—");
+            s.blocks        = bc.value("blocks", 0LL);
+            s.headers       = bc.value("headers", 0LL);
+            s.difficulty    = bc.value("difficulty", 0.0);
+            s.progress      = bc.value("verificationprogress", 0.0);
+            s.pruned        = bc.value("pruned", false);
+            s.ibd           = bc.value("initialblockdownload", false);
+            s.bestblockhash = bc.value("bestblockhash", "");
 
             // Network
-            state.connections      = net.value("connections", 0);
-            state.connections_in   = net.value("connections_in", 0);
-            state.connections_out  = net.value("connections_out", 0);
-            state.subversion       = net.value("subversion", "");
-            state.protocol_version = net.value("protocolversion", 0);
-            state.network_active   = net.value("networkactive", true);
-            state.relay_fee        = net.value("relayfee", 0.0);
+            s.connections      = net.value("connections", 0);
+            s.connections_in   = net.value("connections_in", 0);
+            s.connections_out  = net.value("connections_out", 0);
+            s.subversion       = net.value("subversion", "");
+            s.protocol_version = net.value("protocolversion", 0);
+            s.network_active   = net.value("networkactive", true);
+            s.relay_fee        = net.value("relayfee", 0.0);
 
             // Mempool
-            state.mempool_tx      = mp.value("size", 0LL);
-            state.mempool_bytes   = mp.value("bytes", 0LL);
-            state.mempool_usage   = mp.value("usage", 0LL);
-            state.mempool_max     = mp.value("maxmempool", 300000000LL);
-            state.mempool_min_fee = mp.value("mempoolminfee", 0.0);
-            state.total_fee       = mp.value("total_fee", 0.0);
+            s.mempool_tx      = mp.value("size", 0LL);
+            s.mempool_bytes   = mp.value("bytes", 0LL);
+            s.mempool_usage   = mp.value("usage", 0LL);
+            s.mempool_max     = mp.value("maxmempool", 300000000LL);
+            s.mempool_min_fee = mp.value("mempoolminfee", 0.0);
+            s.total_fee       = mp.value("total_fee", 0.0);
 
             // Hashrate derived from difficulty (saves a getmininginfo round-trip):
             // difficulty × 2³² / 600  ≈  expected hashes per second at current difficulty
-            state.network_hashps = bc.value("difficulty", 0.0) * 4294967296.0 / 600.0;
+            s.network_hashps = bc.value("difficulty", 0.0) * 4294967296.0 / 600.0;
 
             // Peers
-            state.peers.clear();
+            s.peers.clear();
             for (const auto& p : pi) {
                 PeerInfo peer;
                 peer.id              = p.value("id", 0);
@@ -78,10 +73,10 @@ void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
                 peer.addr_processed  = p.value("addr_processed", 0LL);
                 if (p.contains("servicesnames") && p["servicesnames"].is_array()) {
                     std::string svc;
-                    for (const auto& s : p["servicesnames"]) {
+                    for (const auto& sv : p["servicesnames"]) {
                         if (!svc.empty())
                             svc += ", ";
-                        svc += s.get<std::string>();
+                        svc += sv.get<std::string>();
                     }
                     peer.services = svc;
                 }
@@ -97,13 +92,13 @@ void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
                 if (p.contains("bip152_hb_to") && p["bip152_hb_to"].is_bool()) {
                     peer.bip152_hb_to = p["bip152_hb_to"].get<bool>();
                 }
-                state.peers.push_back(std::move(peer));
+                s.peers.push_back(std::move(peer));
             }
 
-            state.connected = true;
-            state.error_message.clear();
-            state.last_update = now_string();
-        }
+            s.connected = true;
+            s.error_message.clear();
+            s.last_update = now_string();
+        });
 
         // Private broadcast queue (Bitcoin Core PR #29415 — skipped on older nodes)
         try {
@@ -117,10 +112,7 @@ void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
                         txids.push_back(entry["txid"].get<std::string>());
                 }
             }
-            {
-                std::lock_guard lock(mtx);
-                state.privbcast_txids = std::move(txids);
-            }
+            state.update([&](auto& s) { s.privbcast_txids = std::move(txids); });
         } catch (...) {
         }
 
@@ -148,21 +140,23 @@ void poll_rpc(RpcClient& rpc, AppState& state, std::mutex& mtx,
                 }
             }
 
-            std::lock_guard lock(mtx);
-            // Trigger slide animation when a new block arrives.
-            if (!state.recent_blocks.empty() && !fresh_blocks.empty()) {
-                state.block_anim_old    = state.recent_blocks;
-                state.block_anim_frame  = 0;
-                state.block_anim_active = true;
-            }
-            state.recent_blocks     = std::move(fresh_blocks);
-            state.blocks_fetched_at = new_tip;
+            state.update([&](auto& s) {
+                // Trigger slide animation when a new block arrives.
+                if (!s.recent_blocks.empty() && !fresh_blocks.empty()) {
+                    s.block_anim_old    = s.recent_blocks;
+                    s.block_anim_frame  = 0;
+                    s.block_anim_active = true;
+                }
+                s.recent_blocks     = std::move(fresh_blocks);
+                s.blocks_fetched_at = new_tip;
+            });
         }
 
     } catch (const std::exception& e) {
-        std::lock_guard lock(mtx);
-        state.connected     = false;
-        state.error_message = e.what();
-        state.last_update   = now_string();
+        state.update([&](auto& s) {
+            s.connected     = false;
+            s.error_message = e.what();
+            s.last_update   = now_string();
+        });
     }
 }

@@ -6,8 +6,8 @@
 using namespace ftxui;
 
 PeersTab::PeersTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                   std::atomic<bool>& running, AppState& state, std::mutex& state_mtx)
-    : Tab(std::move(cfg), auth, screen, running, state, state_mtx) {}
+                   std::atomic<bool>& running, Guarded<AppState>& state)
+    : Tab(std::move(cfg), auth, screen, running, state) {}
 
 // ============================================================================
 // Async actions
@@ -426,12 +426,11 @@ bool PeersTab::handle_tab_events(const Event& event) {
                 action_sel = 0;
             else if (event == Event::Character('b'))
                 action_sel = 1;
-            std::string addr;
-            {
-                std::lock_guard lock(state_mtx_);
-                if (peer_selected >= 0 && peer_selected < static_cast<int>(state_.peers.size()))
-                    addr = state_.peers[peer_selected].addr;
-            }
+            std::string addr = state_.access([&](const auto& s) -> std::string {
+                if (peer_selected >= 0 && peer_selected < static_cast<int>(s.peers.size()))
+                    return s.peers[peer_selected].addr;
+                return {};
+            });
             if (!addr.empty()) {
                 peer_detail_open        = false;
                 peer_disconnect_overlay = true;
@@ -532,11 +531,7 @@ bool PeersTab::handle_tab_events(const Event& event) {
 
     // General peer list navigation
     if (event == Event::ArrowDown || event == Event::ArrowUp) {
-        int n;
-        {
-            std::lock_guard lock(state_mtx_);
-            n = static_cast<int>(state_.peers.size());
-        }
+        int n = state_.access([](const auto& s) { return static_cast<int>(s.peers.size()); });
         if (n > 0) {
             if (event == Event::ArrowDown)
                 peer_selected = std::min(peer_selected + 1, n - 1);

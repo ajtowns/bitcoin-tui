@@ -13,8 +13,8 @@
 class Tab {
   public:
     Tab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-        std::atomic<bool>& running, AppState& state, std::mutex& state_mtx)
-        : cfg_{std::move(cfg)}, auth_{auth}, screen_{screen}, running_{running}, state_{state}, state_mtx_{state_mtx} {}
+        std::atomic<bool>& running, Guarded<AppState>& state)
+        : cfg_{std::move(cfg)}, auth_{auth}, screen_{screen}, running_{running}, state_{state} {}
     virtual ~Tab() = default;
 
     virtual ftxui::Element render(const AppState& snap) = 0;
@@ -25,6 +25,5 @@ class Tab {
     Guarded<RpcAuth>&         auth_;
     ftxui::ScreenInteractive& screen_;
     std::atomic<bool>&        running_;
-    std::mutex&               state_mtx_;
-    AppState&                 state_;
+    Guarded<AppState>&        state_;
 };

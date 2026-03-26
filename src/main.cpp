@@ -190,8 +190,7 @@ static int run(int argc, char* argv[]) {
     }
 
     // Shared state
-    AppState   state;
-    std::mutex state_mtx;
+    Guarded<AppState> state;
 
     // Connection overlay state (not a tab — shown when disconnected)
     std::atomic<bool>                 launch_in_flight{false};
@@ -214,21 +213,17 @@ static int run(int argc, char* argv[]) {
     auto                     tab_toggle = Toggle(&tab_labels, &tab_index);
 
     // Tab objects (mempool first — tools captures a reference to it via lambda)
-    MempoolTab mempool_tab(cfg, auth, screen, running, state, state_mtx);
-    NetworkTab network_tab(cfg, auth, screen, running, state, state_mtx);
-    PeersTab   peers_tab(cfg, auth, screen, running, state, state_mtx);
-    ToolsTab   tools_tab(
-        cfg, auth, screen, running, state, state_mtx,
-        [&](const std::string& q, bool sw) { mempool_tab.trigger_search(q, sw, tab_index); });
+    MempoolTab mempool_tab(cfg, auth, screen, running, state);
+    NetworkTab network_tab(cfg, auth, screen, running, state);
+    PeersTab   peers_tab(cfg, auth, screen, running, state);
+    ToolsTab   tools_tab(cfg, auth, screen, running, state, [&](const std::string& q, bool sw) {
+        mempool_tab.trigger_search(q, sw, tab_index);
+    });
 
     auto layout = Container::Vertical({tab_toggle});
 
     auto renderer = Renderer(layout, [&]() -> Element {
-        AppState snap;
-        {
-            std::lock_guard lock(state_mtx);
-            snap = state;
-        }
+        AppState snap = state.get();
 
         auto oi = mempool_tab.overlay_info();
 
@@ -480,8 +475,8 @@ static int run(int argc, char* argv[]) {
     auto event_handler = CatchEvent(renderer, [&](const Event& event) -> bool {
         // Connection overlay: consumes all events when disconnected
         {
-            std::lock_guard lock(state_mtx);
-            if (state.connected) {
+            bool connected = state.access([](const auto& s) { return s.connected; });
+            if (connected) {
                 launch_done = false;
             } else {
                 int max_sel = can_launch ? 1 : 0;
@@ -599,18 +594,12 @@ static int run(int argc, char* argv[]) {
     std::thread poll_thread([&] {
         RpcClient rpc(cfg, auth);
 
-        {
-            std::lock_guard lock(state_mtx);
-            state.refreshing = true;
-        }
+        state.update([](auto& s) { s.refreshing = true; });
         screen.PostEvent(Event::Custom);
 
-        poll_rpc(rpc, state, state_mtx, wake_screen);
+        poll_rpc(rpc, state, wake_screen);
 
-        {
-            std::lock_guard lock(state_mtx);
-            state.refreshing = false;
-        }
+        state.update([](auto& s) { s.refreshing = false; });
         screen.PostEvent(Event::Custom);
 
         while (running) {
@@ -619,15 +608,12 @@ static int run(int argc, char* argv[]) {
             if (!running)
                 break;
 
-            {
-                std::lock_guard lock(state_mtx);
-                state.refreshing = true;
-            }
+            state.update([](auto& s) { s.refreshing = true; });
             screen.PostEvent(Event::Custom);
 
             if (!explicit_creds) {
-                std::lock_guard lock(state_mtx);
-                if (!state.connected) {
+                bool disconnected = state.access([](const auto& s) { return !s.connected; });
+                if (disconnected) {
                     std::string path =
                         cookie_file.empty() ? cookie_path(network, datadir) : cookie_file;
                     auth.update([&](auto& a) {
@@ -640,12 +626,9 @@ static int run(int argc, char* argv[]) {
                 }
             }
 
-            poll_rpc(rpc, state, state_mtx, wake_screen);
+            poll_rpc(rpc, state, wake_screen);
 
-            {
-                std::lock_guard lock(state_mtx);
-                state.refreshing = false;
-            }
+            state.update([](auto& s) { s.refreshing = false; });
             screen.PostEvent(Event::Custom);
         }
     });
@@ -656,16 +639,15 @@ static int run(int argc, char* argv[]) {
             std::this_thread::sleep_for(std::chrono::milliseconds(40));
             if (!running)
                 break;
-            bool needs_redraw = false;
-            {
-                std::lock_guard lock(state_mtx);
-                if (state.block_anim_active) {
-                    state.block_anim_frame++;
-                    if (state.block_anim_frame >= BLOCK_ANIM_TOTAL_FRAMES)
-                        state.block_anim_active = false;
-                    needs_redraw = true;
+            bool needs_redraw = state.update([](auto& s) {
+                if (s.block_anim_active) {
+                    s.block_anim_frame++;
+                    if (s.block_anim_frame >= BLOCK_ANIM_TOTAL_FRAMES)
+                        s.block_anim_active = false;
+                    return true;
                 }
-            }
+                return false;
+            });
             if (needs_redraw)
                 screen.PostEvent(Event::Custom);
         }

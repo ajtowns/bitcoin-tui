@@ -30,7 +30,7 @@ struct MempoolOverlayInfo {
 class MempoolTab : public Tab {
   public:
     MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-               std::atomic<bool>& running, AppState& state, std::mutex& state_mtx);
+               std::atomic<bool>& running, Guarded<AppState>& state);
     ~MempoolTab() override = default;
 
     // switch_tab=true sets tab_index_out=1 before launching the search thread

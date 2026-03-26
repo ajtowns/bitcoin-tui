@@ -16,7 +16,7 @@
 class NetworkTab : public Tab {
   public:
     NetworkTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
-               std::atomic<bool>& running, AppState& state, std::mutex& state_mtx);
+               std::atomic<bool>& running, Guarded<AppState>& state);
     ~NetworkTab() override = default;
 
     ftxui::Element render(const AppState& snap) override;

@@ -6,9 +6,9 @@
 using namespace ftxui;
 
 ToolsTab::ToolsTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                   std::atomic<bool>& running, AppState& state, std::mutex& state_mtx,
+                   std::atomic<bool>& running, Guarded<AppState>& state,
                    std::function<void(const std::string&, bool)> trigger_search)
-    : Tab(std::move(cfg), auth, screen, running, state, state_mtx),
+    : Tab(std::move(cfg), auth, screen, running, state),
       trigger_search_(std::move(trigger_search)) {}
 
 void ToolsTab::open_broadcast_dialog() {
@@ -22,9 +22,7 @@ void ToolsTab::trigger_broadcast(const std::string& hex) {
     if (broadcast_in_flight_.load())
         return;
     broadcast_in_flight_ = true;
-    broadcast_state_.update([&](auto& bs) {
-        bs = BroadcastState{.hex = hex, .submitting = true};
-    });
+    broadcast_state_.update([&](auto& bs) { bs = BroadcastState{.hex = hex, .submitting = true}; });
     screen_.PostEvent(Event::Custom);
     if (broadcast_thread_.joinable())
         broadcast_thread_.join();
@@ -45,9 +43,7 @@ void ToolsTab::trigger_broadcast(const std::string& hex) {
         broadcast_in_flight_ = false;
         if (!running_.load())
             return;
-        broadcast_state_.update([&](auto& bs) {
-            bs = result;
-        });
+        broadcast_state_.update([&](auto& bs) { bs = result; });
         screen_.PostEvent(Event::Custom);
     });
 }
@@ -103,9 +99,7 @@ bool ToolsTab::handle_tools_input(const Event& event) {
 
 bool ToolsTab::handle_keys(const Event& event) {
     bool has_result_row;
-    broadcast_state_.access([&](const auto& bs) {
-        has_result_row = bs.has_result && bs.success;
-    });
+    broadcast_state_.access([&](const auto& bs) { has_result_row = bs.has_result && bs.success; });
     int shutdown_idx = 1 + (has_result_row ? 1 : 0);
     if (event == Event::Character('b')) {
         open_broadcast_dialog();

@@ -12,8 +12,8 @@
 using namespace ftxui;
 
 MempoolTab::MempoolTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
-                       std::atomic<bool>& running, AppState& state, std::mutex& state_mtx)
-    : Tab(std::move(cfg), auth, screen, running, state, state_mtx) {}
+                       std::atomic<bool>& running, Guarded<AppState>& state)
+    : Tab(std::move(cfg), auth, screen, running, state) {}
 
 void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& tab_index_out) {
     if (search_in_flight_.load())
@@ -36,11 +36,7 @@ void MempoolTab::trigger_search(const std::string& query, bool switch_tab, int& 
     if (search_thread_.joinable())
         search_thread_.join();
 
-    int64_t tip_at_search = 0;
-    {
-        std::lock_guard lock(state_mtx_);
-        tip_at_search = state_.blocks;
-    }
+    int64_t tip_at_search = state_.access([](const auto& s) { return s.blocks; });
 
     bool query_is_height = !query.empty() && std::ranges::all_of(query, [](unsigned char c) {
         return std::isdigit(c) != 0;
@@ -380,11 +376,8 @@ bool MempoolTab::handle_navigation(const Event& event) {
         return false;
 
     if (event == Event::ArrowDown && mempool_sel < 0) {
-        int n;
-        {
-            std::lock_guard lock(state_mtx_);
-            n = static_cast<int>(state_.recent_blocks.size());
-        }
+        int n =
+            state_.access([](const auto& s) { return static_cast<int>(s.recent_blocks.size()); });
         if (n > 0) {
             mempool_sel = 0;
             screen_.PostEvent(Event::Custom);
@@ -392,11 +385,8 @@ bool MempoolTab::handle_navigation(const Event& event) {
         }
     }
     if (mempool_sel >= 0 && (event == Event::ArrowLeft || event == Event::ArrowRight)) {
-        int n;
-        {
-            std::lock_guard lock(state_mtx_);
-            n = static_cast<int>(state_.recent_blocks.size());
-        }
+        int n =
+            state_.access([](const auto& s) { return static_cast<int>(s.recent_blocks.size()); });
         if (n <= 0) {
             mempool_sel = -1;
             screen_.PostEvent(Event::Custom);
@@ -410,12 +400,11 @@ bool MempoolTab::handle_navigation(const Event& event) {
         return true;
     }
     if (event == Event::Return && mempool_sel >= 0) {
-        std::string height_str;
-        {
-            std::lock_guard lock(state_mtx_);
-            if (mempool_sel < static_cast<int>(state_.recent_blocks.size()))
-                height_str = std::to_string(state_.recent_blocks[mempool_sel].height);
-        }
+        std::string height_str = state_.access([&](const auto& s) -> std::string {
+            if (mempool_sel < static_cast<int>(s.recent_blocks.size()))
+                return std::to_string(s.recent_blocks[mempool_sel].height);
+            return {};
+        });
         if (!height_str.empty()) {
             int dummy = 0;
             trigger_search(height_str, false, dummy);
