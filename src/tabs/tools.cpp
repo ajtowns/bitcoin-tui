@@ -22,10 +22,9 @@ void ToolsTab::trigger_broadcast(const std::string& hex) {
     if (broadcast_in_flight_.load())
         return;
     broadcast_in_flight_ = true;
-    {
-        STDLOCK(broadcast_mtx_);
-        broadcast_state_ = BroadcastState{.hex = hex, .submitting = true};
-    }
+    broadcast_state_.update([&](auto& bs) {
+        bs = BroadcastState{.hex = hex, .submitting = true};
+    });
     screen_.PostEvent(Event::Custom);
     if (broadcast_thread_.joinable())
         broadcast_thread_.join();
@@ -46,10 +45,9 @@ void ToolsTab::trigger_broadcast(const std::string& hex) {
         broadcast_in_flight_ = false;
         if (!running_.load())
             return;
-        {
-            STDLOCK(broadcast_mtx_);
-            broadcast_state_ = result;
-        }
+        broadcast_state_.update([&](auto& bs) {
+            bs = result;
+        });
         screen_.PostEvent(Event::Custom);
     });
 }
@@ -64,11 +62,7 @@ void ToolsTab::do_shutdown() {
 }
 
 Element ToolsTab::render(const AppState& snap) {
-    BroadcastState bs;
-    {
-        STDLOCK(broadcast_mtx_);
-        bs = broadcast_state_;
-    }
+    BroadcastState bs = broadcast_state_.get();
     return render_tools(snap, bs, tools_input_active, tools_hex_str_, tools_sel);
 }
 
@@ -109,10 +103,9 @@ bool ToolsTab::handle_tools_input(const Event& event) {
 
 bool ToolsTab::handle_keys(const Event& event) {
     bool has_result_row;
-    {
-        STDLOCK(broadcast_mtx_);
-        has_result_row = broadcast_state_.has_result && broadcast_state_.success;
-    }
+    broadcast_state_.access([&](const auto& bs) {
+        has_result_row = bs.has_result && bs.success;
+    });
     int shutdown_idx = 1 + (has_result_row ? 1 : 0);
     if (event == Event::Character('b')) {
         open_broadcast_dialog();
@@ -129,11 +122,10 @@ bool ToolsTab::handle_keys(const Event& event) {
             do_shutdown();
         } else if (tools_sel == 1 && has_result_row) {
             std::string txid;
-            {
-                STDLOCK(broadcast_mtx_);
-                if (broadcast_state_.has_result && broadcast_state_.success)
-                    txid = broadcast_state_.result_txid;
-            }
+            broadcast_state_.access([&](const auto& bs) {
+                if (bs.has_result && bs.success)
+                    txid = bs.result_txid;
+            });
             if (!txid.empty())
                 trigger_search_(txid, true);
         }

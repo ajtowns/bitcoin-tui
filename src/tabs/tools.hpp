@@ -39,9 +39,8 @@ class ToolsTab : public Tab {
 
     std::function<void(const std::string&, bool)> trigger_search_;
 
-    StdMutex          broadcast_mtx_;
-    BroadcastState    broadcast_state_ GUARDED_BY(broadcast_mtx_);
-    std::atomic<bool> broadcast_in_flight_{false};
-    std::string       tools_hex_str_;
-    std::thread       broadcast_thread_;
+    Guarded<BroadcastState> broadcast_state_;
+    std::atomic<bool>       broadcast_in_flight_{false};
+    std::string             tools_hex_str_;
+    std::thread             broadcast_thread_;
 };
