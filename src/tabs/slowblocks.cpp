@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <ftxui/component/event.hpp>
+#include <re2/re2.h>
 #include <sol/sol.hpp>
 
 #include "logwatcher.hpp"
@@ -310,16 +311,7 @@ void apply_batch(BlockTracker& tracker, const EnrichBatch& batch) {
 void log_thread_fn(const std::string& path, Guarded<SlowBlocksState>& sb_state,
                    Guarded<BlockTracker>& g_tracker, std::atomic<bool>& running,
                    const std::function<void()>& wake_ui) {
-    constexpr int64_t TAIL_BYTES    = 100 * 1024 * 1024;
-    constexpr size_t  MAX_LOG_LINES = 5;
-
-    auto push_line = [&](const std::string& l) {
-        sb_state.update([&](auto& s) {
-            s.recent_log_lines.push_back(l);
-            while (s.recent_log_lines.size() > MAX_LOG_LINES)
-                s.recent_log_lines.pop_front();
-        });
-    };
+    constexpr int64_t TAIL_BYTES = 100 * 1024 * 1024;
 
     sb_state.update([](auto& s) { s.status = "opening..."; });
 
@@ -353,7 +345,6 @@ void log_thread_fn(const std::string& path, Guarded<SlowBlocksState>& sb_state,
         auto ev = parse_log_line(line);
         if (ev)
             g_tracker.update([&](auto& t) { t.process(*ev); });
-        push_line(line);
         ++count;
         if ((count % 100000) == 0) {
             sb_state.update([&](auto& s) {
@@ -397,7 +388,6 @@ void log_thread_fn(const std::string& path, Guarded<SlowBlocksState>& sb_state,
                 });
                 wake_ui();
             }
-            push_line(line);
             sb_state.update([&](auto& s) { s.lines_parsed = ++count; });
         } else {
             f.clear();
@@ -513,24 +503,76 @@ void rpc_thread_fn(Guarded<SlowBlocksState>& sb_state, Guarded<BlockTracker>& g_
     }
 }
 
-// Tick/Lua thread: wakes the UI once per second, runs Lua script.
+struct LogWatch {
+    RE2                     pattern;
+    sol::protected_function callback;
+    LogWatch(const std::string& pat, sol::protected_function fn)
+        : pattern(pat), callback(std::move(fn)) {}
+};
+
+struct LuaTab {
+    std::vector<std::unique_ptr<LogWatch>> log_watches;
+    void watch_log(const std::string& pattern, sol::protected_function fn) {
+        log_watches.push_back(std::make_unique<LogWatch>(pattern, std::move(fn)));
+    }
+};
+
+// Tick/Lua thread: wakes the UI once per second, runs Lua script, tails debug.log.
 void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wake_ui,
-                    Guarded<SlowBlocksState>& sb_state) {
+                    Guarded<SlowBlocksState>& sb_state, const std::string& debug_log_path) {
     sol::state lua;
     lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math);
+
+    lua.new_usertype<LuaTab>("LuaTab", "watch_log", &LuaTab::watch_log);
+    LuaTab tab_obj;
 
     std::optional<sol::protected_function> update{std::nullopt};
     auto load_result = lua.safe_script_file("DUMMY.lua", sol::script_pass_on_error);
 
     if (load_result.valid()) {
+        sol::protected_function init_fn = lua["init"];
+        if (init_fn.valid())
+            init_fn(&tab_obj);
         update = lua["update"];
     }
 
-    while (running) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        if (!running)
-            break;
+    // Open debug.log, seek to end (backlog = 0)
+    std::ifstream logfile(debug_log_path);
+    if (logfile)
+        logfile.seekg(0, std::ios::end);
 
+    std::string line;
+    while (running) {
+        // Read new log lines, feed to Lua callbacks
+        if (logfile) {
+            while (std::getline(logfile, line)) {
+                for (auto& lw : tab_obj.log_watches) {
+                    if (RE2::PartialMatch(line, lw->pattern)) {
+                        auto result = lw->callback(line);
+                        if (result.valid()) {
+                            sol::object obj = result;
+                            if (obj.is<sol::table>()) {
+                                sol::table              tbl = obj;
+                                int64_t                 seq = tbl["seq"];
+                                std::vector<std::string> lines;
+                                for (int64_t k = seq;; --k) {
+                                    sol::object v = tbl[k];
+                                    if (!v.valid() || v.is<sol::nil_t>())
+                                        break;
+                                    lines.push_back(v.as<std::string>());
+                                }
+                                sb_state.update([&](auto& s) {
+                                    s.recent_log_lines.assign(lines.rbegin(), lines.rend());
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            logfile.clear();
+        }
+
+        // Call update()
         if (update && update->valid()) {
             auto result = (*update)();
             if (result.valid()) {
@@ -543,6 +585,7 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
             }
         }
         wake_ui();
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
 
@@ -562,7 +605,8 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
     rpc_thread_ = std::thread(rpc_thread_fn, std::ref(sb_state_), std::ref(tracker_),
                               std::ref(running_), wake, std::move(cfg_copy), std::ref(auth_));
 
-    tick_thread_ = std::thread(tick_thread_fn, std::ref(running_), wake, std::ref(sb_state_));
+    tick_thread_ = std::thread(tick_thread_fn, std::ref(running_), wake, std::ref(sb_state_),
+                               std::cref(debug_log_path_));
 }
 
 Element SlowBlocksTab::key_hints(const AppState& snap) const {
