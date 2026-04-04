@@ -63,6 +63,9 @@ list(REMOVE_ITEM LUA_SOURCES
 )
 add_library(lua_static STATIC ${LUA_SOURCES})
 target_include_directories(lua_static PUBLIC ${lua_SOURCE_DIR})
+if(NOT WIN32)
+  target_compile_definitions(lua_static PRIVATE LUA_USE_POSIX)
+endif()
 
 # Sol2
 FetchContent_Declare(

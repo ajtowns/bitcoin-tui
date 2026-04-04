@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <ftxui/component/event.hpp>
+#include <sol/sol.hpp>
 
 #include "logwatcher.hpp"
 #include "render.hpp"
@@ -512,12 +513,36 @@ void rpc_thread_fn(Guarded<SlowBlocksState>& sb_state, Guarded<BlockTracker>& g_
     }
 }
 
-// Tick thread: wakes the UI once per second for the validation timer.
-void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wake_ui) {
+// Tick/Lua thread: wakes the UI once per second, runs Lua script.
+void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wake_ui,
+                    Guarded<SlowBlocksState>& sb_state) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math);
+
+    std::optional<sol::protected_function> update{std::nullopt};
+    auto load_result = lua.safe_script_file("DUMMY.lua", sol::script_pass_on_error);
+
+    if (load_result.valid()) {
+        update = lua["update"];
+    }
+
     while (running) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        if (running)
-            wake_ui();
+        if (!running)
+            break;
+
+        if (update && update->valid()) {
+            auto result = (*update)();
+            if (result.valid()) {
+                std::string s = result.get<std::string>();
+                sb_state.update([&](auto& st) { st.lua_status = std::move(s); });
+            } else {
+                sol::error err = result;
+                sb_state.update(
+                    [&](auto& st) { st.lua_status = std::string("error: ") + err.what(); });
+            }
+        }
+        wake_ui();
     }
 }
 
@@ -537,11 +562,12 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
     rpc_thread_ = std::thread(rpc_thread_fn, std::ref(sb_state_), std::ref(tracker_),
                               std::ref(running_), wake, std::move(cfg_copy), std::ref(auth_));
 
-    tick_thread_ = std::thread(tick_thread_fn, std::ref(running_), wake);
+    tick_thread_ = std::thread(tick_thread_fn, std::ref(running_), wake, std::ref(sb_state_));
 }
 
 Element SlowBlocksTab::key_hints(const AppState& snap) const {
-    return hbox({refresh_indicator(snap),
+    auto lua_str = sb_state_.access([](const auto& s) { return s.lua_status; });
+    return hbox({text("  " + lua_str) | color(Color::Cyan), refresh_indicator(snap),
                  text("  [Tab/\u2190/\u2192] switch  [q] quit ") | color(Color::GrayDark)});
 }
 
