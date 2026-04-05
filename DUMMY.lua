@@ -2,7 +2,7 @@
 -- Block tracking state
 local blocks = {}         -- hash -> block info
 local block_order = {}    -- array of hashes for display order
-local pending_connect_ms = nil
+local pending_connect_secs = nil
 local active_height = 0
 local block_table
 
@@ -13,8 +13,10 @@ local function seen_block(ts, hash)
             height = nil,
             hash = hash,
             time_header = ts,
-            compact = nil,
             time_block = nil,
+            compact = nil,
+            txns_requested = nil,
+            validation_secs = nil,
             size = nil,
             tx_count = nil,
         }
@@ -47,7 +49,7 @@ local function on_received(ts, msg, hash)
 end
 
 local function on_connect(ts, msg, elapsed)
-    pending_connect_ms = tonumber(elapsed)
+    pending_connect_secs = tonumber(elapsed) / 1000.0
 end
 
 local function on_update_tip(ts, msg, hash, height)
@@ -57,9 +59,30 @@ local function on_update_tip(ts, msg, hash, height)
     if not b.height then b.height = h end
     if not b.time_block then b.time_block = ts end
     if b.compact == nil then b.compact = false end
-    if pending_connect_ms then
-        b.validation_ms = pending_connect_ms
-        pending_connect_ms = nil
+    if pending_connect_secs then
+        b.validation_secs = pending_connect_secs
+        pending_connect_secs = nil
+    end
+end
+
+local function embolden(v)
+    if v == nil then return nil end
+    if type(v) == "table" then
+        v.bold = true
+        return v
+    else
+        return { value = v, bold = true }
+    end
+end
+
+local function num_colour(n, max_green, max_yellow)
+    if n == nil then return nil end
+    if n < max_green then
+        return { value = n, color = "green" }
+    elseif n < max_yellow then
+        return { value = n, color = "yellow" }
+    else
+        return { value = n, color = "red" }
     end
 end
 
@@ -111,13 +134,25 @@ local function update()
         if b then
             local delta = nil
             if b.time_block and b.time_header then delta = b.time_block - b.time_header end
+            local compact = ""
+            if b.time_block then
+                if b.compact then
+                    if b.txns_requested > 0 then
+                        compact = "yes (" .. tostring(b.txns_requested) .. " req)"
+                    else
+                        compact = "yes"
+                    end
+                else
+                    compact = "no"
+                end
+            end
             block_table:update(seq, {
                 height = b.height,
                 hash = hash,
                 header = b.time_header,
-                block = delta,
-                compact = "",
-                validate = b.validation_ms and b.validation_ms / 1000 or nil,
+                block = num_colour(delta, 1, 10),
+                compact = compact,
+                validate = embolden(num_colour(b.validation_secs, 0.5, 5.0)),
             })
         end
     end
@@ -143,9 +178,9 @@ function init()
             { name = "code", header = "*" },
             { name = "hash", header = "Hash", type = "hash" },
             { name = "header", header = "Header", type = "timestamp" },
-            { name = "block", header = "Block", type = "duration" },
+            { name = "block", header = "Block Delay", type = "number", decimals = 3 },
             { name = "compact", header = "Compact" },
-            { name = "validate", header = "Validate", type = "duration" },
+            { name = "validate", header = "Validation Delay", type = "number", decimals = 3 },
             { name = "size", header = "Size", type = "bytes" },
             { name = "txs", header = "TXs", type = "number" },
         },
