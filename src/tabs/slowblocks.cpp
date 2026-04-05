@@ -988,6 +988,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
 
         // Compute column widths for visible columns
         // For multi-line headers, use the widest line
+        // First column has no leading space; others have 1 char leading space
         std::vector<int> widths(vis.size());
         for (size_t vi = 0; vi < vis.size(); ++vi) {
             const auto& hdr = cols[vis[vi]].header;
@@ -1002,14 +1003,14 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
                     max_w = w;
                 pos = nl + 1;
             }
-            widths[vi] = max_w + 2;
+            widths[vi] = max_w + (vi == 0 ? 1 : 2);
         }
         tbl->access([&](const auto& rows) {
             for (const auto& row : rows) {
                 for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
                     auto s = format_cell(cols[vis[vi]].type, row.cells[vis[vi]].data,
                                          cols[vis[vi]].decimals);
-                    int  w = static_cast<int>(s.size()) + 2;
+                    int  w = static_cast<int>(s.size()) + (vi == 0 ? 1 : 2);
                     if (w > widths[vi])
                         widths[vi] = w;
                 }
@@ -1054,14 +1055,16 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
             size_t   pad_lines = max_lines - hdr_lines[vi].size();
             for (size_t i = 0; i < pad_lines; ++i)
                 lines.push_back(text(""));
+            std::string prefix = (vi == 0) ? "" : " ";
             for (const auto& line : hdr_lines[vi]) {
                 std::string s = line;
                 if (ralign[vi]) {
-                    int pad = widths[vi] - static_cast<int>(s.size()) - 1;
+                    int pad = widths[vi] - static_cast<int>(s.size()) -
+                              static_cast<int>(prefix.size());
                     if (pad > 0)
                         s = std::string(pad, ' ') + s;
                 }
-                lines.push_back(text(" " + s));
+                lines.push_back(text(prefix + s));
             }
             auto el = (max_lines == 1) ? std::move(lines[0]) : vbox(std::move(lines));
             if (vi + 1 < vis.size() || ralign[vi])
@@ -1081,15 +1084,17 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
             for (const auto& row : rows) {
                 Elements cells;
                 for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
-                    const auto& cv = row.cells[vis[vi]];
-                    std::string val =
+                    const auto&    cv = row.cells[vis[vi]];
+                    std::string    val =
                         format_cell(cols[vis[vi]].type, cv.data, cols[vis[vi]].decimals);
+                    std::string prefix = (vi == 0) ? "" : " ";
                     if (ralign[vi]) {
-                        int pad = widths[vi] - static_cast<int>(val.size()) - 1;
+                        int pad = widths[vi] - static_cast<int>(val.size()) -
+                                  static_cast<int>(prefix.size());
                         if (pad > 0)
                             val = std::string(pad, ' ') + val;
                     }
-                    auto el = text(" " + val);
+                    auto el = text(prefix + val);
                     if (!cv.color.empty()) {
                         if (cv.color == "red")
                             el = el | color(Color::Red);
