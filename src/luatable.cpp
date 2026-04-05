@@ -55,11 +55,11 @@ std::string format_cell(ColumnType type, const CellData& data, int decimals) {
     case ColumnType::Bytes: {
         double value = std::holds_alternative<double>(data) ? std::get<double>(data) : 0.0;
         if (value < 1000) {
-            snprintf(buf, sizeof(buf), "%.0fB", value);
+            snprintf(buf, sizeof(buf), "%.0f  B", value);
         } else if (value < 1000000) {
-            snprintf(buf, sizeof(buf), "%.1fKB", value / 1000);
+            snprintf(buf, sizeof(buf), "%.1f kB", value / 1000);
         } else {
-            snprintf(buf, sizeof(buf), "%.2fMB", value / 1000000);
+            snprintf(buf, sizeof(buf), "%.2f MB", value / 1000000);
         }
         return buf;
     }

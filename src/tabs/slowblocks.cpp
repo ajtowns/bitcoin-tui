@@ -77,7 +77,7 @@ std::string fmt_validation_time(double ms) {
 std::string fmt_size(int bytes) {
     if (bytes < 1000000) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "%.1fKB", bytes / 1000.0);
+        snprintf(buf, sizeof(buf), "%.1fkB", bytes / 1000.0);
         return buf;
     }
     char buf[32];
