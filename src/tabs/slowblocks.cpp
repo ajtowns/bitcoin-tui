@@ -528,9 +528,10 @@ void rpc_thread_fn(Guarded<SlowBlocksState>& sb_state, Guarded<BlockTracker>& g_
 
 struct LogWatch {
     RE2                     pattern;
+    int                     ngroups;
     sol::protected_function callback;
     LogWatch(const std::string& pat, sol::protected_function fn)
-        : pattern(pat), callback(std::move(fn)) {}
+        : pattern(pat), ngroups(pattern.NumberOfCapturingGroups()), callback(std::move(fn)) {}
 };
 
 // Convert a json value to a sol::object for returning RPC results to Lua.
@@ -724,8 +725,22 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
                 }
 
                 for (auto& lw : log_watches) {
-                    if (RE2::PartialMatch(msg, lw->pattern)) {
-                        lw->callback(ts, msg);
+                    int                          n = lw->ngroups;
+                    std::vector<std::string>     captures(n);
+                    std::vector<RE2::Arg>        args(n);
+                    std::vector<const RE2::Arg*> arg_ptrs(n);
+                    for (int i = 0; i < n; ++i) {
+                        args[i]     = &captures[i];
+                        arg_ptrs[i] = &args[i];
+                    }
+                    if (RE2::PartialMatchN(msg, lw->pattern, arg_ptrs.data(), n)) {
+                        sol::variadic_results vr;
+                        vr.push_back({lua, sol::in_place, ts});
+                        vr.push_back({lua, sol::in_place, msg});
+                        for (int i = 0; i < n; ++i) {
+                            vr.push_back({lua, sol::in_place, captures[i]});
+                        }
+                        lw->callback(std::move(vr));
                     }
                 }
             }
