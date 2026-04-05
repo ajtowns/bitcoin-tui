@@ -13,6 +13,7 @@
 #include <sol/sol.hpp>
 
 #include "logwatcher.hpp"
+#include "luatable.hpp"
 #include "render.hpp"
 
 using namespace ftxui;
@@ -311,7 +312,7 @@ void apply_batch(BlockTracker& tracker, const EnrichBatch& batch) {
 void log_thread_fn(const std::string& path, Guarded<SlowBlocksState>& sb_state,
                    Guarded<BlockTracker>& g_tracker, std::atomic<bool>& running,
                    const std::function<void()>& wake_ui) {
-    constexpr int64_t TAIL_BYTES = 100 * 1024 * 1024;
+    constexpr int64_t TAIL_BYTES = 10 * 1024 * 1024;
 
     sb_state.update([](auto& s) { s.status = "opening..."; });
 
@@ -510,21 +511,100 @@ struct LogWatch {
         : pattern(pat), callback(std::move(fn)) {}
 };
 
-struct LuaTab {
-    std::vector<std::unique_ptr<LogWatch>> log_watches;
-    void watch_log(const std::string& pattern, sol::protected_function fn) {
-        log_watches.push_back(std::make_unique<LogWatch>(pattern, std::move(fn)));
-    }
-};
-
 // Tick/Lua thread: wakes the UI once per second, runs Lua script, tails debug.log.
 void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wake_ui,
-                    Guarded<SlowBlocksState>& sb_state, const std::string& debug_log_path) {
+                    Guarded<SlowBlocksState>& sb_state, const std::string& debug_log_path,
+                    Guarded<LuaTableVec>& lua_tables) {
     sol::state lua;
     lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math);
 
-    lua.new_usertype<LuaTab>("LuaTab", "watch_log", &LuaTab::watch_log);
-    LuaTab tab_obj;
+    // Convert a Lua value to CellData based on column type
+    auto to_cell_data = [](ColumnType type, const sol::object& v) -> CellData {
+        switch (type) {
+        case ColumnType::Number:
+            if (v.is<int64_t>())
+                return v.as<int64_t>();
+            if (v.is<double>())
+                return static_cast<int64_t>(v.as<double>());
+            return int64_t(0);
+        case ColumnType::Timestamp:
+        case ColumnType::Duration:
+        case ColumnType::Bytes:
+            if (v.is<double>())
+                return v.as<double>();
+            return 0.0;
+        default:
+            if (v.is<std::string>())
+                return v.as<std::string>();
+            if (v.is<double>())
+                return std::to_string(v.as<double>());
+            return std::string{};
+        }
+    };
+
+    // Convert a Lua key to CellData based on the table's key column type
+    auto to_key = [&](LuaTable& self, const sol::object& v) -> CellData {
+        return to_cell_data(self.key_type(), v);
+    };
+
+    // Register LuaTable usertype
+    lua.new_usertype<LuaTable>(
+        "LuaTable", "update",
+        [&](LuaTable& self, const sol::object& key, sol::table data) {
+            std::map<std::string, CellValue> cells;
+            const auto&                      cols = self.columns();
+            for (auto& [k, v] : data) {
+                std::string col_name = k.as<std::string>();
+                CellValue   cv;
+                // Find column type
+                ColumnType ct = ColumnType::String;
+                for (const auto& col : cols) {
+                    if (col.name == col_name) {
+                        ct = col.type;
+                        break;
+                    }
+                }
+                if (v.is<sol::table>()) {
+                    sol::table sv = v;
+                    cv.color      = sv.get_or<std::string>("color", "");
+                    cv.bold       = sv.get_or("bold", false);
+                    cv.data       = to_cell_data(ct, sv["value"]);
+                } else {
+                    cv.data = to_cell_data(ct, v);
+                }
+                cells[col_name] = std::move(cv);
+            }
+            self.update(to_key(self, key), cells);
+        },
+        "remove",
+        [&](LuaTable& self, const sol::object& key) { return self.remove(to_key(self, key)); },
+        "keys", &LuaTable::keys);
+
+    // Register globals for Lua scripts
+    std::vector<std::unique_ptr<LogWatch>> log_watches;
+
+    lua["tui_watch_log"] = [&](const std::string& pattern, sol::protected_function fn) {
+        log_watches.push_back(std::make_unique<LogWatch>(pattern, std::move(fn)));
+    };
+
+    lua["tui_table"] = [&](const std::string& key_column, sol::table col_defs,
+                           sol::optional<std::string> title) -> std::shared_ptr<LuaTable> {
+        std::vector<ColumnDef> cols;
+        for (size_t i = 1; i <= col_defs.size(); ++i) {
+            sol::table  col      = col_defs[i];
+            std::string name     = col["name"];
+            std::string header   = col.get_or<std::string>("header", name);
+            std::string type_str = col.get_or<std::string>("type", "string");
+            auto        type     = parse_column_type(type_str);
+            if (!type) {
+                throw std::runtime_error("unknown column type: " + type_str);
+            }
+            cols.push_back({std::move(name), std::move(header), *type});
+        }
+        auto tbl = std::make_shared<LuaTable>(key_column, std::move(cols), title.value_or(""));
+        lua_tables.update([&](auto& v) { v.push_back(tbl); });
+        return tbl;
+    };
 
     std::optional<sol::protected_function> update{std::nullopt};
     auto load_result = lua.safe_script_file("DUMMY.lua", sol::script_pass_on_error);
@@ -532,7 +612,7 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
     if (load_result.valid()) {
         sol::protected_function init_fn = lua["init"];
         if (init_fn.valid())
-            init_fn(&tab_obj);
+            init_fn();
         update = lua["update"];
     }
 
@@ -546,26 +626,33 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
         // Read new log lines, feed to Lua callbacks
         if (logfile) {
             while (std::getline(logfile, line)) {
-                for (auto& lw : tab_obj.log_watches) {
-                    if (RE2::PartialMatch(line, lw->pattern)) {
-                        auto result = lw->callback(line);
-                        if (result.valid()) {
-                            sol::object obj = result;
-                            if (obj.is<sol::table>()) {
-                                sol::table              tbl = obj;
-                                int64_t                 seq = tbl["seq"];
-                                std::vector<std::string> lines;
-                                for (int64_t k = seq;; --k) {
-                                    sol::object v = tbl[k];
-                                    if (!v.valid() || v.is<sol::nil_t>())
-                                        break;
-                                    lines.push_back(v.as<std::string>());
-                                }
-                                sb_state.update([&](auto& s) {
-                                    s.recent_log_lines.assign(lines.rbegin(), lines.rend());
-                                });
-                            }
-                        }
+                // Parse timestamp and split into (timestamp, message)
+                static const RE2 re_ts_msg(
+                    R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z (.*)$)");
+                std::string y, mo, d, h, mi, s, frac, msg;
+                double      ts = 0.0;
+                if (RE2::FullMatch(line, re_ts_msg, &y, &mo, &d, &h, &mi, &s, &frac, &msg)) {
+                    std::tm tm{};
+                    tm.tm_year = std::stoi(y) - 1900;
+                    tm.tm_mon  = std::stoi(mo) - 1;
+                    tm.tm_mday = std::stoi(d);
+                    tm.tm_hour = std::stoi(h);
+                    tm.tm_min  = std::stoi(mi);
+                    tm.tm_sec  = std::stoi(s);
+                    auto tp    = Clock::from_time_t(timegm(&tm));
+                    if (!frac.empty()) {
+                        while (frac.size() < 6)
+                            frac += '0';
+                        tp += std::chrono::microseconds(std::stoi(frac));
+                    }
+                    ts = std::chrono::duration<double>(tp.time_since_epoch()).count();
+                } else {
+                    msg = line;
+                }
+
+                for (auto& lw : log_watches) {
+                    if (RE2::PartialMatch(msg, lw->pattern)) {
+                        lw->callback(ts, msg);
                     }
                 }
             }
@@ -606,7 +693,7 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
                               std::ref(running_), wake, std::move(cfg_copy), std::ref(auth_));
 
     tick_thread_ = std::thread(tick_thread_fn, std::ref(running_), wake, std::ref(sb_state_),
-                               std::cref(debug_log_path_));
+                               std::cref(debug_log_path_), std::ref(lua_tables_));
 }
 
 Element SlowBlocksTab::key_hints(const AppState& snap) const {
@@ -619,17 +706,11 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     // Copy data out under the lock, then release
     std::vector<BlockEvent>   blocks;
     std::vector<ChainTipInfo> tips;
-    std::string               log_status;
-    int64_t                   lines_parsed = 0;
-    std::vector<std::string>  log_lines;
     std::optional<TimePoint>  validating_since;
     std::string               warning;
     sb_state_.access([&](const auto& s) {
-        blocks       = s.blocks;
-        tips         = s.tips;
-        log_status   = s.status;
-        lines_parsed = s.lines_parsed;
-        log_lines.assign(s.recent_log_lines.begin(), s.recent_log_lines.end());
+        blocks           = s.blocks;
+        tips             = s.tips;
         validating_since = s.validating_since;
         warning          = s.warning;
     });
@@ -741,18 +822,110 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
 
     auto tips_panel = section_box("Recent Chain Tips", tip_rows);
 
-    // Log watcher status + recent lines
-    Elements log_rows;
-    log_rows.push_back(hbox({
-        text(" Log Watcher ") | bold | color(Color::Gold1),
-        text(" " + debug_log_path_) | color(Color::GrayDark),
-        text("  [" + log_status + ", " + std::to_string(lines_parsed) + " lines]") |
-            color(Color::GrayDark),
-    }));
-    for (const auto& l : log_lines) {
-        log_rows.push_back(text("  " + l));
+    // Lua tables
+    Elements lua_panels;
+    auto     tables = lua_tables_.get();
+    for (const auto& tbl : tables) {
+        const auto& cols  = tbl->columns();
+        size_t      ncols = cols.size();
+
+        // Visible columns (non-empty header)
+        std::vector<size_t> vis;
+        for (size_t i = 0; i < ncols; ++i) {
+            if (!cols[i].header.empty())
+                vis.push_back(i);
+        }
+
+        // Compute column widths for visible columns
+        std::vector<int> widths(vis.size());
+        for (size_t vi = 0; vi < vis.size(); ++vi) {
+            widths[vi] = static_cast<int>(cols[vis[vi]].header.size()) + 2;
+        }
+        tbl->access([&](const auto& rows) {
+            for (const auto& row : rows) {
+                for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
+                    auto s = format_cell(cols[vis[vi]].type, row.cells[vis[vi]].data);
+                    int  w = static_cast<int>(s.size()) + 2;
+                    if (w > widths[vi])
+                        widths[vi] = w;
+                }
+            }
+        });
+
+        // Right-aligned columns
+        std::vector<bool> ralign(vis.size(), false);
+        for (size_t vi = 0; vi < vis.size(); ++vi) {
+            switch (cols[vis[vi]].type) {
+            case ColumnType::Number:
+            case ColumnType::Duration:
+            case ColumnType::Bytes:
+                ralign[vi] = true;
+                break;
+            default:
+                break;
+            }
+        }
+
+        // Header row
+        Elements hdr_cells;
+        for (size_t vi = 0; vi < vis.size(); ++vi) {
+            std::string hdr = cols[vis[vi]].header;
+            if (ralign[vi] && vi + 1 < vis.size()) {
+                int pad = widths[vi] - static_cast<int>(hdr.size()) - 1;
+                if (pad > 0)
+                    hdr = std::string(pad, ' ') + hdr;
+            }
+            auto el = text(" " + hdr);
+            if (vi + 1 < vis.size())
+                el = el | size(WIDTH, EQUAL, widths[vi]);
+            else
+                el = el | flex;
+            hdr_cells.push_back(el);
+        }
+        Elements tbl_rows;
+        tbl_rows.push_back(hbox(hdr_cells) | color(Color::Cyan) | bold);
+        tbl_rows.push_back(separator());
+
+        // Data rows
+        tbl->access([&](const auto& rows) {
+            for (const auto& row : rows) {
+                Elements cells;
+                for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
+                    const auto& cv  = row.cells[vis[vi]];
+                    std::string val = format_cell(cols[vis[vi]].type, cv.data);
+                    if (ralign[vi] && vi + 1 < vis.size()) {
+                        int pad = widths[vi] - static_cast<int>(val.size()) - 1;
+                        if (pad > 0)
+                            val = std::string(pad, ' ') + val;
+                    }
+                    auto el = text(" " + val);
+                    if (!cv.color.empty()) {
+                        if (cv.color == "red")
+                            el = el | color(Color::Red);
+                        else if (cv.color == "green")
+                            el = el | color(Color::Green);
+                        else if (cv.color == "yellow")
+                            el = el | color(Color::Yellow);
+                        else if (cv.color == "cyan")
+                            el = el | color(Color::Cyan);
+                        else if (cv.color == "gray")
+                            el = el | color(Color::GrayDark);
+                    }
+                    if (cv.bold)
+                        el = el | ftxui::bold;
+                    if (vi + 1 < vis.size())
+                        el = el | size(WIDTH, EQUAL, widths[vi]);
+                    else
+                        el = el | flex;
+                    cells.push_back(el);
+                }
+                tbl_rows.push_back(hbox(cells));
+            }
+        });
+
+        std::string box_title = tbl->title().empty() ? "Lua Table" : tbl->title();
+        lua_panels.push_back(section_box(box_title, tbl_rows));
     }
-    auto log_panel = vbox(log_rows) | border;
 
     Elements panels;
     if (!warning.empty()) {
@@ -760,7 +933,9 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     }
     panels.push_back(block_table);
     panels.push_back(tips_panel);
-    panels.push_back(log_panel);
+    for (auto& lp : lua_panels) {
+        panels.push_back(std::move(lp));
+    }
     return vbox(panels) | flex;
 }
 

@@ -1,19 +1,22 @@
-local log_lines = { seq = 0 }
+local log_table
+local seq = 0
 
-local function got_raw_log_line(line)
-    local seq = log_lines.seq + 1
-    log_lines.seq = seq
-    log_lines[seq] = line
-    local k = seq - 5
-    while log_lines[k] ~= nil do
-        log_lines[k] = nil
-        k = k - 1
+local function got_raw_log_line(ts, msg)
+    seq = seq + 1
+    log_table:update(seq, { timestamp = ts, msg = msg })
+    local oseq = seq - 10
+    while log_table:remove(oseq) do
+        oseq = oseq - 1
     end
-    return log_lines
 end
 
-function init(tab)
-    tab:watch_log("^", got_raw_log_line)
+function init()
+    log_table = tui_table("seq", {
+--        { name = "seq", header = "#", type = "number" },
+        { name = "timestamp", header = "Time", type = "timestamp" },
+        { name = "msg", header = "Message" },
+    }, "Log Watcher")
+    tui_watch_log("^", got_raw_log_line)
 end
 
 x = 1

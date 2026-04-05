@@ -12,6 +12,7 @@
 
 #include "guarded.hpp"
 #include "logwatcher.hpp"
+#include "luatable.hpp"
 #include "tabs/tab.hpp"
 
 struct BlockEvent {
@@ -39,7 +40,6 @@ struct SlowBlocksState {
     std::vector<ChainTipInfo> tips;
     int64_t                   lines_parsed = 0;
     std::string               status;           // "reading...", "tailing", "error: ..."
-    std::deque<std::string>   recent_log_lines; // last N matched log lines
     std::optional<std::chrono::system_clock::time_point>
         validating_since;  // set during slow validation
     std::string warning;       // e.g. missing log categories
@@ -61,6 +61,7 @@ class SlowBlocksTab : public Tab {
     std::string              debug_log_path_;
     Guarded<SlowBlocksState> sb_state_;
     Guarded<BlockTracker>    tracker_;
+    Guarded<LuaTableVec>     lua_tables_;
     std::thread              log_thread_;
     std::thread              rpc_thread_;
     std::thread              tick_thread_;
