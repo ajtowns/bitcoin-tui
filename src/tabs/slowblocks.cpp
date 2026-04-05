@@ -23,6 +23,7 @@ using namespace std::chrono_literals;
 
 const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
     "estimatesmartfee",
+    "getbestblockhash",
     "getblock",
     "getblockchaininfo",
     "getblockcount",
@@ -529,9 +530,11 @@ void rpc_thread_fn(Guarded<SlowBlocksState>& sb_state, Guarded<BlockTracker>& g_
 struct LogWatch {
     RE2                     pattern;
     int                     ngroups;
+    int64_t                 backlog_bytes;
     sol::protected_function callback;
-    LogWatch(const std::string& pat, sol::protected_function fn)
-        : pattern(pat), ngroups(pattern.NumberOfCapturingGroups()), callback(std::move(fn)) {}
+    LogWatch(const std::string& pat, sol::protected_function fn, int64_t backlog = 0)
+        : pattern(pat), ngroups(pattern.NumberOfCapturingGroups()),
+          backlog_bytes(std::max(int64_t{0}, backlog)), callback(std::move(fn)) {}
 };
 
 // Convert a json value to a sol::object for returning RPC results to Lua.
@@ -638,8 +641,10 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
     // Register globals for Lua scripts
     std::vector<std::unique_ptr<LogWatch>> log_watches;
 
-    lua["tui_watch_log"] = [&](const std::string& pattern, sol::protected_function fn) {
-        log_watches.push_back(std::make_unique<LogWatch>(pattern, std::move(fn)));
+    lua["tui_watch_log"] = [&](const std::string& pattern, sol::protected_function fn,
+                               sol::optional<int64_t> backlog) {
+        log_watches.push_back(
+            std::make_unique<LogWatch>(pattern, std::move(fn), backlog.value_or(0)));
     };
 
     lua["tui_table"] = [&](sol::table opts) -> std::shared_ptr<LuaTable> {
@@ -690,16 +695,32 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
             init_fn();
     }
 
-    // Open debug.log, seek to end (backlog = 0)
+    // Open debug.log, seek back by max backlog
+    int64_t max_backlog = 0;
+    for (const auto& lw : log_watches) {
+        max_backlog = std::max(max_backlog, lw->backlog_bytes);
+    }
+
     std::ifstream logfile(debug_log_path);
-    if (logfile)
+    int64_t       live_pos = 0;
+    if (logfile) {
         logfile.seekg(0, std::ios::end);
+        live_pos = logfile.tellg();
+        if (max_backlog > 0 && live_pos > max_backlog) {
+            logfile.seekg(live_pos - max_backlog);
+            // Skip to next newline to avoid partial line
+            std::string discard;
+            std::getline(logfile, discard);
+        }
+    }
 
     std::string line;
     while (running) {
         // Read new log lines, feed to Lua callbacks
         if (logfile) {
             while (std::getline(logfile, line)) {
+                int64_t cur_pos         = logfile.tellg();
+                int64_t bytes_from_live = std::max(int64_t{0}, live_pos - cur_pos);
                 // Parse timestamp and split into (timestamp, message)
                 static const RE2 re_ts_msg(
                     R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z (.*)$)");
@@ -725,6 +746,8 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
                 }
 
                 for (auto& lw : log_watches) {
+                    if (bytes_from_live > lw->backlog_bytes)
+                        continue;
                     int                          n = lw->ngroups;
                     std::vector<std::string>     captures(n);
                     std::vector<RE2::Arg>        args(n);
