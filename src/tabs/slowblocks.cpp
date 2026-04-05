@@ -641,8 +641,8 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
         log_watches.push_back(std::make_unique<LogWatch>(pattern, std::move(fn)));
     };
 
-    lua["tui_table"] = [&](const std::string& key_column, sol::table col_defs,
-                           sol::optional<std::string> title) -> std::shared_ptr<LuaTable> {
+    lua["tui_table"] = [&](sol::table opts) -> std::shared_ptr<LuaTable> {
+        sol::table             col_defs = opts["columns"];
         std::vector<ColumnDef> cols;
         for (size_t i = 1; i <= col_defs.size(); ++i) {
             sol::table  col      = col_defs[i];
@@ -655,7 +655,12 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
             }
             cols.push_back({std::move(name), std::move(header), *type});
         }
-        auto tbl = std::make_shared<LuaTable>(key_column, std::move(cols), title.value_or(""));
+        std::string def_key    = cols.empty() ? std::string{} : cols[0].name;
+        std::string key_column = opts.get_or("key", std::move(def_key));
+        std::string title      = opts.get_or("title", std::string{});
+        bool        no_header  = opts.get_or("no_header", false);
+        auto        tbl =
+            std::make_shared<LuaTable>(key_column, std::move(cols), std::move(title), no_header);
         lua_tables.update([&](auto& v) { v.push_back(tbl); });
         return tbl;
     };
@@ -822,13 +827,11 @@ Element SlowBlocksTab::key_hints(const AppState& snap) const {
 
 Element SlowBlocksTab::render(const AppState& /*snap*/) {
     // Copy data out under the lock, then release
-    std::vector<BlockEvent>   blocks;
-    std::vector<ChainTipInfo> tips;
-    std::optional<TimePoint>  validating_since;
-    std::string               warning;
+    std::vector<BlockEvent>  blocks;
+    std::optional<TimePoint> validating_since;
+    std::string              warning;
     sb_state_.access([&](const auto& s) {
         blocks           = s.blocks;
-        tips             = s.tips;
         validating_since = s.validating_since;
         warning          = s.warning;
     });
@@ -857,13 +860,13 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
                       color(Color::Cyan) | bold;
 
     // Find active tip height for display filtering
-    int active_tip_height = 0;
-    for (const auto& t : tips) {
-        if (t.status == "active") {
-            active_tip_height = t.height;
-            break;
+    int active_tip_height = sb_state_.access([](const auto& s) {
+        for (const auto& t : s.tips) {
+            if (t.status == "active")
+                return t.height;
         }
-    }
+        return 0;
+    });
 
     // Block rows
     Elements rows;
@@ -918,27 +921,6 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     }
 
     auto block_table = section_box("Recent Blocks", rows);
-
-    // Chain tips panel
-    Elements tip_rows;
-    for (const auto& t : tips) {
-        Color tip_color = Color::GrayDark;
-        if (t.status == "active")
-            tip_color = Color::Green;
-        else if (t.status == "valid-fork")
-            tip_color = Color::Yellow;
-        else if (t.status == "valid-headers")
-            tip_color = Color::Yellow;
-        std::string label_str(1, t.label);
-        tip_rows.push_back(hbox({
-            text("  " + label_str) | color(Color::Cyan),
-            text("  " + t.status) | size(WIDTH, EQUAL, 16) | color(tip_color),
-            text("  height=" + std::to_string(t.height)),
-            text("  " + t.hash) | color(Color::GrayDark),
-        }));
-    }
-
-    auto tips_panel = section_box("Recent Chain Tips", tip_rows);
 
     // Lua tables
     Elements lua_panels;
@@ -1001,8 +983,10 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
             hdr_cells.push_back(el);
         }
         Elements tbl_rows;
-        tbl_rows.push_back(hbox(hdr_cells) | color(Color::Cyan) | bold);
-        tbl_rows.push_back(separator());
+        if (!tbl->no_header()) {
+            tbl_rows.push_back(hbox(hdr_cells) | color(Color::Cyan) | bold);
+            tbl_rows.push_back(separator());
+        }
 
         // Data rows
         tbl->access([&](const auto& rows) {
@@ -1050,7 +1034,6 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
         panels.push_back(text(" " + warning) | bold | color(Color::Red) | border);
     }
     panels.push_back(block_table);
-    panels.push_back(tips_panel);
     for (auto& lp : lua_panels) {
         panels.push_back(std::move(lp));
     }

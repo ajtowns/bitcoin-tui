@@ -95,9 +95,11 @@ static std::vector<ColumnDef> ensure_key_column(std::vector<ColumnDef> columns,
     return columns;
 }
 
-LuaTable::LuaTable(const std::string& key_column, std::vector<ColumnDef> columns, std::string title)
+LuaTable::LuaTable(const std::string& key_column, std::vector<ColumnDef> columns, std::string title,
+                   bool no_header)
     : columns_(ensure_key_column(std::move(columns), key_column)), title_(std::move(title)),
-      key_index_(col_index(key_column)), rows_(std::set<Row, RowCompare>(RowCompare{key_index_})) {}
+      no_header_(no_header), key_index_(col_index(key_column)),
+      rows_(std::set<Row, RowCompare>(RowCompare{key_index_})) {}
 
 size_t LuaTable::col_index(const std::string& name) const {
     for (size_t i = 0; i < columns_.size(); ++i) {

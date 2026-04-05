@@ -46,7 +46,8 @@ struct RowCompare {
 
 class LuaTable {
   public:
-    LuaTable(const std::string& key_column, std::vector<ColumnDef> columns, std::string title = {});
+    LuaTable(const std::string& key_column, std::vector<ColumnDef> columns, std::string title = {},
+             bool no_header = false);
 
     void update(const CellData& key, const std::map<std::string, CellValue>& data);
     bool remove(const CellData& key);
@@ -55,6 +56,7 @@ class LuaTable {
 
     const std::vector<ColumnDef>& columns() const { return columns_; }
     const std::string&            title() const { return title_; }
+    bool                          no_header() const { return no_header_; }
     size_t                        key_index() const { return key_index_; }
 
     ColumnType key_type() const { return columns_[key_index_].type; }
@@ -65,6 +67,7 @@ class LuaTable {
   private:
     const std::vector<ColumnDef>       columns_;
     const std::string                  title_;
+    const bool                         no_header_;
     const size_t                       key_index_;
     Guarded<std::set<Row, RowCompare>> rows_;
 
