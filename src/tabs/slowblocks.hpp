@@ -12,7 +12,6 @@
 #include "tabs/tab.hpp"
 
 struct SlowBlocksState {
-    std::string warning;    // e.g. missing log categories
     std::string lua_status; // status output from Lua
 };
 
@@ -28,7 +27,7 @@ class SlowBlocksTab : public Tab {
     void           join() override;
 
   private:
-    std::string                 debug_log_path_;
+    const std::string           debug_log_path_;
     const std::set<std::string> rpc_allowlist_;
     Guarded<SlowBlocksState>    sb_state_;
     Guarded<LuaTableVec>        lua_tables_;

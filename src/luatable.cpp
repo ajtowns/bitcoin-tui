@@ -1,6 +1,5 @@
 #include "luatable.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <ctime>
 #include <map>

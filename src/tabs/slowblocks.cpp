@@ -1,9 +1,7 @@
 #include "slowblocks.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <fstream>
-#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -385,8 +383,6 @@ Element SlowBlocksTab::key_hints(const AppState& snap) const {
 }
 
 Element SlowBlocksTab::render(const AppState& /*snap*/) {
-    std::string warning = sb_state_.access([](const auto& s) { return s.warning; });
-
     // Lua tables
     Elements lua_panels;
     auto     tables = lua_tables_.get();
@@ -537,9 +533,6 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     }
 
     Elements panels;
-    if (!warning.empty()) {
-        panels.push_back(text(" " + warning) | bold | color(Color::Red) | border);
-    }
     for (auto& lp : lua_panels) {
         panels.push_back(std::move(lp));
     }
