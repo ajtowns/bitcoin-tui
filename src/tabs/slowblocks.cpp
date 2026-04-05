@@ -215,12 +215,6 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
 
     auto load_result = lua.safe_script_file("SLOWBLOCKS.lua", sol::script_pass_on_error);
 
-    if (load_result.valid()) {
-        sol::protected_function init_fn = lua["init"];
-        if (init_fn.valid())
-            init_fn();
-    }
-
     // Open debug.log, seek back by max backlog
     int64_t max_backlog = 0;
     for (const auto& lw : log_watches) {

@@ -233,47 +233,45 @@ local function got_raw_log_line(ts, msg)
     while log_table:remove(oseq) do oseq = oseq - 1 end
 end
 
-function init()
-    block_table = tui_table({
-        key = "seq",
-        title = "Recent Blocks (lua)",
-        columns = {
-            { name = "height", header = "Height", type = "number" },
-            { name = "code", header = " " },
-            { name = "hash", header = "Hash" },
-            { name = "header", header = "Header", type = "timestamp" },
-            { name = "compact", header = "Compact" },
-            { name = "block", header = "Block\nDelay (s)", type = "number", decimals = 3 },
-            { name = "validate", header = "Validation\nDelay (s)", type = "number", decimals = 3 },
-            { name = "size", header = "Size (kB)", type = "number", decimals = 1 },
-            { name = "txs", header = "TXs", type = "number" },
-        },
-    })
-    tip_table = tui_table({
-        key = "seq",
-        title = "Recent Chain Tips",
-        no_header = true,
-        columns = {
-            { name = "code", header = "*" },
-            { name = "status", header = "Status" },
-            { name = "height", header = "Height" },
-            { name = "hash", header = "Hash" },
-        },
-    })
-    log_table = tui_table({
-        key = "seq",
-        title = "Log Watcher",
-        columns = {
-            { name = "timestamp", header = "Time", type = "timestamp" },
-            { name = "msg", header = "Message" },
-        },
-    })
-    local BACKLOG = 2*1024*1024
-    tui_watch_log("Saw new (cmpctblock )?header hash=(\\w+) height=(\\d+)", on_saw_header, BACKLOG)
-    tui_watch_log("Successfully reconstructed block (\\w+) with (\\d+) txn prefilled, (\\d+) txn from mempool \\(incl at least \\d+ from extra pool\\) and (\\d+) txn", on_reconstructed, BACKLOG)
-    tui_watch_log("received block (\\w+) peer=", on_received, BACKLOG)
-    tui_watch_log("- Connect block: ([0-9.]+)ms", on_connect, BACKLOG)
-    tui_watch_log("UpdateTip: new best=(\\w+) height=(\\d+)", on_update_tip, BACKLOG)
-    tui_watch_log("^", got_raw_log_line, 5000)
-    tui_set_interval(1, update)
-end
+block_table = tui_table({
+    key = "seq",
+    title = "Recent Blocks (lua)",
+    columns = {
+        { name = "height", header = "Height", type = "number" },
+        { name = "code", header = " " },
+        { name = "hash", header = "Hash" },
+        { name = "header", header = "Header", type = "timestamp" },
+        { name = "compact", header = "Compact" },
+        { name = "block", header = "Block\nDelay (s)", type = "number", decimals = 3 },
+        { name = "validate", header = "Validation\nDelay (s)", type = "number", decimals = 3 },
+        { name = "size", header = "Size (kB)", type = "number", decimals = 1 },
+        { name = "txs", header = "TXs", type = "number" },
+    },
+})
+tip_table = tui_table({
+    key = "seq",
+    title = "Recent Chain Tips",
+    no_header = true,
+    columns = {
+        { name = "code", header = "*" },
+        { name = "status", header = "Status" },
+        { name = "height", header = "Height" },
+        { name = "hash", header = "Hash" },
+    },
+})
+log_table = tui_table({
+    key = "seq",
+    title = "Log Watcher",
+    columns = {
+        { name = "timestamp", header = "Time", type = "timestamp" },
+        { name = "msg", header = "Message" },
+    },
+})
+local BACKLOG = 2*1024*1024
+tui_watch_log("Saw new (cmpctblock )?header hash=(\\w+) height=(\\d+)", on_saw_header, BACKLOG)
+tui_watch_log("Successfully reconstructed block (\\w+) with (\\d+) txn prefilled, (\\d+) txn from mempool \\(incl at least \\d+ from extra pool\\) and (\\d+) txn", on_reconstructed, BACKLOG)
+tui_watch_log("received block (\\w+) peer=", on_received, BACKLOG)
+tui_watch_log("- Connect block: ([0-9.]+)ms", on_connect, BACKLOG)
+tui_watch_log("UpdateTip: new best=(\\w+) height=(\\d+)", on_update_tip, BACKLOG)
+tui_watch_log("^", got_raw_log_line, 5000)
+tui_set_interval(1, update)
