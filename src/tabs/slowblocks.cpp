@@ -577,9 +577,16 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
     lua.script("function tui_rpc(method, ...) return coroutine.yield('rpc', method, {...}) end");
 
     // Convert a Lua value to CellData based on column type
-    auto to_cell_data = [](ColumnType type, const sol::object& v) -> CellData {
+    auto to_cell_data = [](ColumnType type, int decimals, const sol::object& v) -> CellData {
         switch (type) {
         case ColumnType::Number:
+            if (decimals >= 0) {
+                if (v.is<double>())
+                    return v.as<double>();
+                if (v.is<int64_t>())
+                    return static_cast<double>(v.as<int64_t>());
+                return 0.0;
+            }
             if (v.is<int64_t>())
                 return v.as<int64_t>();
             if (v.is<double>())
@@ -602,7 +609,7 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
 
     // Convert a Lua key to CellData based on the table's key column type
     auto to_key = [&](LuaTable& self, const sol::object& v) -> CellData {
-        return to_cell_data(self.key_type(), v);
+        return to_cell_data(self.key_type(), -1, v);
     };
 
     // Register LuaTable usertype
@@ -612,13 +619,17 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
             std::map<std::string, CellValue> cells;
             const auto&                      cols = self.columns();
             for (auto& [k, v] : data) {
+                if (v.is<sol::lua_nil_t>())
+                    continue;
                 std::string col_name = k.as<std::string>();
                 CellValue   cv;
                 // Find column type
-                ColumnType ct = ColumnType::String;
+                ColumnType ct  = ColumnType::String;
+                int        dec = -1;
                 for (const auto& col : cols) {
                     if (col.name == col_name) {
-                        ct = col.type;
+                        ct  = col.type;
+                        dec = col.decimals;
                         break;
                     }
                 }
@@ -626,9 +637,9 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
                     sol::table sv = v;
                     cv.color      = sv.get_or<std::string>("color", "");
                     cv.bold       = sv.get_or("bold", false);
-                    cv.data       = to_cell_data(ct, sv["value"]);
+                    cv.data       = to_cell_data(ct, dec, sv["value"]);
                 } else {
-                    cv.data = to_cell_data(ct, v);
+                    cv.data = to_cell_data(ct, dec, v);
                 }
                 cells[col_name] = std::move(cv);
             }
@@ -659,7 +670,8 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
             if (!type) {
                 throw std::runtime_error("unknown column type: " + type_str);
             }
-            cols.push_back({std::move(name), std::move(header), *type});
+            int decimals = col.get_or("decimals", -1);
+            cols.push_back({std::move(name), std::move(header), *type, decimals});
         }
         std::string def_key    = cols.empty() ? std::string{} : cols[0].name;
         std::string key_column = opts.get_or("key", std::move(def_key));
@@ -982,7 +994,8 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
         tbl->access([&](const auto& rows) {
             for (const auto& row : rows) {
                 for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
-                    auto s = format_cell(cols[vis[vi]].type, row.cells[vis[vi]].data);
+                    auto s = format_cell(cols[vis[vi]].type, row.cells[vis[vi]].data,
+                                         cols[vis[vi]].decimals);
                     int  w = static_cast<int>(s.size()) + 2;
                     if (w > widths[vi])
                         widths[vi] = w;
@@ -1031,8 +1044,9 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
             for (const auto& row : rows) {
                 Elements cells;
                 for (size_t vi = 0; vi < vis.size() && vis[vi] < row.cells.size(); ++vi) {
-                    const auto& cv  = row.cells[vis[vi]];
-                    std::string val = format_cell(cols[vis[vi]].type, cv.data);
+                    const auto& cv = row.cells[vis[vi]];
+                    std::string val =
+                        format_cell(cols[vis[vi]].type, cv.data, cols[vis[vi]].decimals);
                     if (ralign[vi] && vi + 1 < vis.size()) {
                         int pad = widths[vi] - static_cast<int>(val.size()) - 1;
                         if (pad > 0)

@@ -19,12 +19,13 @@ std::optional<ColumnType> parse_column_type(const std::string& s);
 using CellData = std::variant<std::string, int64_t, double>;
 
 // Format a CellData value for display according to its column type.
-std::string format_cell(ColumnType type, const CellData& data);
+std::string format_cell(ColumnType type, const CellData& data, int decimals = -1);
 
 struct ColumnDef {
     std::string name;
     std::string header;
-    ColumnType  type = ColumnType::String;
+    ColumnType  type     = ColumnType::String;
+    int         decimals = -1; // -1 = use type default
 };
 
 struct CellValue {

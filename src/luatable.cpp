@@ -21,7 +21,12 @@ std::optional<ColumnType> parse_column_type(const std::string& s) {
     return std::nullopt;
 }
 
-std::string format_cell(ColumnType type, const CellData& data) {
+std::string format_cell(ColumnType type, const CellData& data, int decimals) {
+    // Unset cells (default string) render as blank for numeric types
+    if (std::holds_alternative<std::string>(data) && std::get<std::string>(data).empty() &&
+        type != ColumnType::String && type != ColumnType::Hash) {
+        return {};
+    }
     char buf[64];
     switch (type) {
     case ColumnType::Timestamp: {
@@ -59,6 +64,14 @@ std::string format_cell(ColumnType type, const CellData& data) {
         return buf;
     }
     case ColumnType::Number: {
+        if (decimals >= 0) {
+            double value = std::holds_alternative<double>(data) ? std::get<double>(data)
+                           : std::holds_alternative<int64_t>(data)
+                               ? static_cast<double>(std::get<int64_t>(data))
+                               : 0.0;
+            snprintf(buf, sizeof(buf), "%.*f", decimals, value);
+            return buf;
+        }
         if (std::holds_alternative<int64_t>(data)) {
             return std::to_string(std::get<int64_t>(data));
         }
