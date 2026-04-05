@@ -138,12 +138,12 @@ local function update()
             if b.time_block then
                 if b.compact then
                     if b.txns_requested > 0 then
-                        compact = "yes (" .. tostring(b.txns_requested) .. " req)"
+                        compact = { value = "yes (" .. tostring(b.txns_requested) .. " req)", color = "yellow" }
                     else
-                        compact = "yes"
+                        compact = { value = "yes", color = "green" }
                     end
                 else
-                    compact = "no"
+                    compact = { value = "no", color = "gray" }
                 end
             end
             block_table:update(seq, {
@@ -153,6 +153,8 @@ local function update()
                 block = num_colour(delta, 1, 10),
                 compact = compact,
                 validate = embolden(num_colour(b.validation_secs, 0.5, 5.0)),
+                size = b.size,
+                txs = b.tx_count,
             })
         end
     end
@@ -178,9 +180,9 @@ function init()
             { name = "code", header = "*" },
             { name = "hash", header = "Hash", type = "hash" },
             { name = "header", header = "Header", type = "timestamp" },
-            { name = "block", header = "Block Delay", type = "number", decimals = 3 },
             { name = "compact", header = "Compact" },
-            { name = "validate", header = "Validation Delay", type = "number", decimals = 3 },
+            { name = "block", header = "Block\nDelay (s)", type = "number", decimals = 3 },
+            { name = "validate", header = "Validation\nDelay (s)", type = "number", decimals = 3 },
             { name = "size", header = "Size", type = "bytes" },
             { name = "txs", header = "TXs", type = "number" },
         },
