@@ -111,8 +111,6 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
                 return static_cast<int64_t>(v.as<double>());
             return int64_t(0);
         case ColumnType::Timestamp:
-        case ColumnType::Duration:
-        case ColumnType::Bytes:
             if (v.is<double>())
                 return v.as<double>();
             return 0.0;
@@ -217,7 +215,7 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
         timers.insert({Clock::now() + interval, {interval, std::move(fn)}});
     };
 
-    auto load_result = lua.safe_script_file("DUMMY.lua", sol::script_pass_on_error);
+    auto load_result = lua.safe_script_file("SLOWBLOCKS.lua", sol::script_pass_on_error);
 
     if (load_result.valid()) {
         sol::protected_function init_fn = lua["init"];
@@ -439,8 +437,6 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
         for (size_t vi = 0; vi < vis.size(); ++vi) {
             switch (cols[vis[vi]].type) {
             case ColumnType::Number:
-            case ColumnType::Duration:
-            case ColumnType::Bytes:
                 ralign[vi] = true;
                 break;
             default:

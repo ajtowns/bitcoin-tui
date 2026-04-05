@@ -240,7 +240,7 @@ function init()
         columns = {
             { name = "height", header = "Height", type = "number" },
             { name = "code", header = " " },
-            { name = "hash", header = "Hash", type = "hash" },
+            { name = "hash", header = "Hash" },
             { name = "header", header = "Header", type = "timestamp" },
             { name = "compact", header = "Compact" },
             { name = "block", header = "Block\nDelay (s)", type = "number", decimals = 3 },
@@ -257,7 +257,7 @@ function init()
             { name = "code", header = "*" },
             { name = "status", header = "Status" },
             { name = "height", header = "Height" },
-            { name = "hash", header = "Hash", type = "hash" },
+            { name = "hash", header = "Hash" },
         },
     })
     log_table = tui_table({

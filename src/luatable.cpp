@@ -12,19 +12,13 @@ std::optional<ColumnType> parse_column_type(const std::string& s) {
         return ColumnType::Number;
     if (s == "timestamp")
         return ColumnType::Timestamp;
-    if (s == "duration")
-        return ColumnType::Duration;
-    if (s == "bytes")
-        return ColumnType::Bytes;
-    if (s == "hash")
-        return ColumnType::Hash;
     return std::nullopt;
 }
 
 std::string format_cell(ColumnType type, const CellData& data, int decimals) {
     // Unset cells (default string) render as blank for numeric types
     if (std::holds_alternative<std::string>(data) && std::get<std::string>(data).empty() &&
-        type != ColumnType::String && type != ColumnType::Hash) {
+        type != ColumnType::String) {
         return {};
     }
     char buf[64];
@@ -37,30 +31,6 @@ std::string format_cell(ColumnType type, const CellData& data, int decimals) {
         localtime_r(&sec, &tm);
         int ms = static_cast<int>(frac * 1000);
         snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
-        return buf;
-    }
-    case ColumnType::Duration: {
-        double value = std::holds_alternative<double>(data) ? std::get<double>(data) : 0.0;
-        if (value < 1.0) {
-            snprintf(buf, sizeof(buf), "%.0fms", value * 1000);
-        } else if (value < 60.0) {
-            snprintf(buf, sizeof(buf), "%.3fs", value);
-        } else {
-            int    mins = static_cast<int>(value) / 60;
-            double secs = value - mins * 60;
-            snprintf(buf, sizeof(buf), "%dm %.0fs", mins, secs);
-        }
-        return buf;
-    }
-    case ColumnType::Bytes: {
-        double value = std::holds_alternative<double>(data) ? std::get<double>(data) : 0.0;
-        if (value < 1000) {
-            snprintf(buf, sizeof(buf), "%.0f  B", value);
-        } else if (value < 1000000) {
-            snprintf(buf, sizeof(buf), "%.1f kB", value / 1000);
-        } else {
-            snprintf(buf, sizeof(buf), "%.2f MB", value / 1000000);
-        }
         return buf;
     }
     case ColumnType::Number: {
@@ -83,7 +53,6 @@ std::string format_cell(ColumnType type, const CellData& data, int decimals) {
         }
         return buf;
     }
-    case ColumnType::Hash:
     case ColumnType::String:
         if (std::holds_alternative<std::string>(data))
             return std::get<std::string>(data);
