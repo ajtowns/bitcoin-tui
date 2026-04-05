@@ -75,6 +75,19 @@ local function embolden(v)
     end
 end
 
+local function gray_all_if(cond, tbl)
+    if cond then
+        for k, v in pairs(tbl) do
+            if type(v) == "table" then
+                v.color = "gray"
+            elseif v ~= nil then
+                tbl[k] = { value = v, color = "gray" }
+            end
+        end
+    end
+    return tbl
+end
+
 local function num_colour(n, max_green, max_yellow)
     if n == nil then return nil end
     if n < max_green then
@@ -86,6 +99,35 @@ local function num_colour(n, max_green, max_yellow)
     end
 end
 
+local function tip_labels(chaintips, tips)
+    local labels = {}
+    local prefix = ""
+    for _, tip in ipairs(chaintips) do
+        local info = tips[tip.hash]
+        if info then
+            local cur = tip.hash
+            for i = 1, 100 do
+                if not cur or not blocks[cur] then break end
+                if not labels[cur] then labels[cur] = prefix end
+                labels[cur] = labels[cur] .. info.letter
+                cur = blocks[cur].prev
+            end
+            prefix = prefix .. " "
+        end
+    end
+    return labels
+end
+
+local function code_colour(code)
+    if code ~= nil and code:sub(1,1) == "A" then return { value = code, color = "cyan" } end
+    return code
+end
+
+local function abbrev_hash(h)
+    if h == nil then return h end
+    return h:sub(1,8) .. "..." .. h:sub(-12)
+end
+
 local function update()
     local chaintips = tui_rpc("getchaintips")
     local tips = {}
@@ -95,6 +137,18 @@ local function update()
         if tip.status == "active" then
             active = tip.hash
             active_height = tip.height
+        end
+    end
+
+    for _, hash in ipairs(block_order) do
+        local b = blocks[hash]
+        if b and not b.prev then
+            local hdr = tui_rpc("getblockheader", hash)
+            if hdr then b.prev = hdr.previousblockhash end
+        end
+        if b and not b.size then
+            local blk = tui_rpc("getblock", hash, 1)
+            if blk and blk.size then b.size = blk.size/1000; b.tx_count = blk.nTx end
         end
     end
 
@@ -129,15 +183,20 @@ local function update()
     end
     while tip_table:remove(seq + 1) do seq = seq + 1 end
 
+    if not active_height then return end
+
+    local labels = tip_labels(chaintips, tips)
     for seq, hash in ipairs(block_order) do
         local b = blocks[hash]
-        if b then
+        if b and b.height >= active_height - 15 then
             local delta = nil
             if b.time_block and b.time_header then delta = b.time_block - b.time_header end
             local compact = ""
             if b.time_block then
                 if b.compact then
-                    if b.txns_requested > 0 then
+                    if b.txns_requested == nil then
+                        compact = { value = "yes (header)", color = "yellow" }
+                    elseif b.txns_requested > 0 then
                         compact = { value = "yes (" .. tostring(b.txns_requested) .. " req)", color = "yellow" }
                     else
                         compact = { value = "yes", color = "green" }
@@ -146,16 +205,19 @@ local function update()
                     compact = { value = "no", color = "gray" }
                 end
             end
-            block_table:update(seq, {
+            local code = labels[hash]
+            local inactive = (code == nil or code:sub(1,1) ~= "A")
+            block_table:update(seq, gray_all_if(inactive, {
                 height = b.height,
-                hash = hash,
+                code = code_colour(code),
+                hash = abbrev_hash(hash),
                 header = b.time_header,
-                block = num_colour(delta, 1, 10),
                 compact = compact,
+                block = num_colour(delta, 1, 10),
                 validate = embolden(num_colour(b.validation_secs, 0.5, 5.0)),
                 size = b.size,
                 txs = b.tx_count,
-            })
+            }))
         end
     end
 end
@@ -177,13 +239,13 @@ function init()
         title = "Recent Blocks (lua)",
         columns = {
             { name = "height", header = "Height", type = "number" },
-            { name = "code", header = "*" },
+            { name = "code", header = " " },
             { name = "hash", header = "Hash", type = "hash" },
             { name = "header", header = "Header", type = "timestamp" },
             { name = "compact", header = "Compact" },
             { name = "block", header = "Block\nDelay (s)", type = "number", decimals = 3 },
             { name = "validate", header = "Validation\nDelay (s)", type = "number", decimals = 3 },
-            { name = "size", header = "Size", type = "bytes" },
+            { name = "size", header = "Size (kB)", type = "number", decimals = 1 },
             { name = "txs", header = "TXs", type = "number" },
         },
     })
