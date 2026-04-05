@@ -987,9 +987,22 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
         }
 
         // Compute column widths for visible columns
+        // For multi-line headers, use the widest line
         std::vector<int> widths(vis.size());
         for (size_t vi = 0; vi < vis.size(); ++vi) {
-            widths[vi] = static_cast<int>(cols[vis[vi]].header.size()) + 2;
+            const auto& hdr = cols[vis[vi]].header;
+            int         max_w = 0;
+            size_t      pos = 0;
+            while (pos <= hdr.size()) {
+                size_t nl = hdr.find('\n', pos);
+                if (nl == std::string::npos)
+                    nl = hdr.size();
+                int w = static_cast<int>(nl - pos);
+                if (w > max_w)
+                    max_w = w;
+                pos = nl + 1;
+            }
+            widths[vi] = max_w + 2;
         }
         tbl->access([&](const auto& rows) {
             for (const auto& row : rows) {
@@ -1017,21 +1030,45 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
             }
         }
 
-        // Header row
+        // Header row (supports multi-line headers with \n, bottom-aligned)
+        // First pass: split headers and find max line count
+        std::vector<std::vector<std::string>> hdr_lines(vis.size());
+        size_t                                max_lines = 1;
+        for (size_t vi = 0; vi < vis.size(); ++vi) {
+            const std::string& hdr = cols[vis[vi]].header;
+            size_t             pos = 0;
+            while (pos <= hdr.size()) {
+                size_t nl = hdr.find('\n', pos);
+                if (nl == std::string::npos)
+                    nl = hdr.size();
+                hdr_lines[vi].push_back(hdr.substr(pos, nl - pos));
+                pos = nl + 1;
+            }
+            if (hdr_lines[vi].size() > max_lines)
+                max_lines = hdr_lines[vi].size();
+        }
+        // Second pass: build cells, padding short headers with blank lines above
         Elements hdr_cells;
         for (size_t vi = 0; vi < vis.size(); ++vi) {
-            std::string hdr = cols[vis[vi]].header;
-            if (ralign[vi] && vi + 1 < vis.size()) {
-                int pad = widths[vi] - static_cast<int>(hdr.size()) - 1;
-                if (pad > 0)
-                    hdr = std::string(pad, ' ') + hdr;
+            Elements lines;
+            size_t   pad_lines = max_lines - hdr_lines[vi].size();
+            for (size_t i = 0; i < pad_lines; ++i)
+                lines.push_back(text(""));
+            for (const auto& line : hdr_lines[vi]) {
+                std::string s = line;
+                if (ralign[vi]) {
+                    int pad = widths[vi] - static_cast<int>(s.size()) - 1;
+                    if (pad > 0)
+                        s = std::string(pad, ' ') + s;
+                }
+                lines.push_back(text(" " + s));
             }
-            auto el = text(" " + hdr);
-            if (vi + 1 < vis.size())
+            auto el = (max_lines == 1) ? std::move(lines[0]) : vbox(std::move(lines));
+            if (vi + 1 < vis.size() || ralign[vi])
                 el = el | size(WIDTH, EQUAL, widths[vi]);
             else
                 el = el | flex;
-            hdr_cells.push_back(el);
+            hdr_cells.push_back(std::move(el));
         }
         Elements tbl_rows;
         if (!tbl->no_header()) {
@@ -1047,7 +1084,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
                     const auto& cv = row.cells[vis[vi]];
                     std::string val =
                         format_cell(cols[vis[vi]].type, cv.data, cols[vis[vi]].decimals);
-                    if (ralign[vi] && vi + 1 < vis.size()) {
+                    if (ralign[vi]) {
                         int pad = widths[vi] - static_cast<int>(val.size()) - 1;
                         if (pad > 0)
                             val = std::string(pad, ' ') + val;
@@ -1067,7 +1104,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
                     }
                     if (cv.bold)
                         el = el | ftxui::bold;
-                    if (vi + 1 < vis.size())
+                    if (vi + 1 < vis.size() || ralign[vi])
                         el = el | size(WIDTH, EQUAL, widths[vi]);
                     else
                         el = el | flex;
