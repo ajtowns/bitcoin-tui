@@ -1,50 +1,19 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
-#include <deque>
-#include <optional>
 #include <set>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include <ftxui/dom/elements.hpp>
 
 #include "guarded.hpp"
-#include "logwatcher.hpp"
 #include "luatable.hpp"
 #include "tabs/tab.hpp"
 
-struct BlockEvent {
-    int                                                  height = 0;
-    std::string                                          hash;
-    std::chrono::system_clock::time_point                time_header;
-    bool                                                 via_compact = false;
-    std::optional<std::chrono::system_clock::time_point> time_block;
-    int                                                  txns_requested = 0;
-    double                                               validation_ms  = -1;
-    std::string                                          tips;
-    int                                                  size_bytes = 0;
-    int                                                  tx_count   = 0;
-};
-
-struct ChainTipInfo {
-    char        label  = ' ';
-    int         height = 0;
-    std::string hash;
-    std::string status;
-};
-
 struct SlowBlocksState {
-    std::vector<BlockEvent>   blocks;
-    std::vector<ChainTipInfo> tips;
-    int64_t                   lines_parsed = 0;
-    std::string               status; // "reading...", "tailing", "error: ..."
-    std::optional<std::chrono::system_clock::time_point>
-                validating_since; // set during slow validation
-    std::string warning;          // e.g. missing log categories
-    std::string lua_status;       // test output from Lua
+    std::string warning;    // e.g. missing log categories
+    std::string lua_status; // status output from Lua
 };
 
 class SlowBlocksTab : public Tab {
@@ -62,9 +31,6 @@ class SlowBlocksTab : public Tab {
     std::string                 debug_log_path_;
     const std::set<std::string> rpc_allowlist_;
     Guarded<SlowBlocksState>    sb_state_;
-    Guarded<BlockTracker>       tracker_;
     Guarded<LuaTableVec>        lua_tables_;
-    std::thread                 log_thread_;
-    std::thread                 rpc_thread_;
     std::thread                 tick_thread_;
 };

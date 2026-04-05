@@ -88,7 +88,6 @@ add_executable(bitcoin-tui
   src/tabs/peers.cpp
   src/tabs/tools.cpp
   src/tabs/slowblocks.cpp
-  src/logwatcher.cpp
   src/luatable.cpp
 )
 
@@ -145,11 +144,6 @@ add_executable(test_format tests/test_format.cpp)
 target_include_directories(test_format PRIVATE src/)
 target_link_libraries(test_format PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test_format COMMAND test_format)
-
-add_executable(test_logwatcher tests/test_logwatcher.cpp src/logwatcher.cpp)
-target_include_directories(test_logwatcher PRIVATE src/)
-target_link_libraries(test_logwatcher PRIVATE Catch2::Catch2WithMain re2::re2)
-add_test(NAME test_logwatcher COMMAND test_logwatcher)
 
 add_executable(test_state tests/test_state.cpp)
 target_include_directories(test_state PRIVATE src/)
