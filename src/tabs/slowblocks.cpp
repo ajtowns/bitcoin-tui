@@ -606,14 +606,28 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
         return tbl;
     };
 
-    std::optional<sol::protected_function> update{std::nullopt};
+    lua["tui_key_hint"] = [&](const std::string& hint) {
+        sb_state.update([&](auto& st) { st.lua_status = hint; });
+    };
+
+    struct LuaTimer {
+        Clock::duration         interval;
+        sol::protected_function callback;
+    };
+    std::map<TimePoint, LuaTimer> timers;
+
+    lua["tui_set_interval"] = [&](double secs, sol::protected_function fn) {
+        auto interval =
+            std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(secs));
+        timers.insert({Clock::now() + interval, {interval, std::move(fn)}});
+    };
+
     auto load_result = lua.safe_script_file("DUMMY.lua", sol::script_pass_on_error);
 
     if (load_result.valid()) {
         sol::protected_function init_fn = lua["init"];
         if (init_fn.valid())
             init_fn();
-        update = lua["update"];
     }
 
     // Open debug.log, seek to end (backlog = 0)
@@ -659,20 +673,27 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
             logfile.clear();
         }
 
-        // Call update()
-        if (update && update->valid()) {
-            auto result = (*update)();
-            if (result.valid()) {
-                std::string s = result.get<std::string>();
-                sb_state.update([&](auto& st) { st.lua_status = std::move(s); });
-            } else {
+        // Fire due timers
+        auto now = Clock::now();
+        while (!timers.empty() && timers.begin()->first <= now) {
+            auto node   = timers.extract(timers.begin());
+            auto result = node.mapped().callback();
+            if (!result.valid()) {
                 sol::error err = result;
                 sb_state.update(
                     [&](auto& st) { st.lua_status = std::string("error: ") + err.what(); });
             }
+            now        = Clock::now();
+            node.key() = std::max(now, node.key() + node.mapped().interval);
+            timers.insert(std::move(node));
         }
+
         wake_ui();
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!timers.empty()) {
+            std::this_thread::sleep_until(std::max(timers.begin()->first, Clock::now()));
+        } else {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
 }
 

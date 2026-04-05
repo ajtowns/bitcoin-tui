@@ -10,6 +10,13 @@ local function got_raw_log_line(ts, msg)
     end
 end
 
+local x = 1
+
+local function update()
+    x = x + 2
+    tui_key_hint("AJ: x=" .. tostring(x))
+end
+
 function init()
     log_table = tui_table("seq", {
 --        { name = "seq", header = "#", type = "number" },
@@ -17,12 +24,5 @@ function init()
         { name = "msg", header = "Message" },
     }, "Log Watcher")
     tui_watch_log("^", got_raw_log_line)
-end
-
-x = 1
-
-function update()
-    x = x + 2
-    return "AJ: x=" .. tostring(x)
-    -- return "x=" .. tostring(x) .. " seq=" .. tostring(log_lines.seq)
+    tui_set_interval(1, update)
 end
