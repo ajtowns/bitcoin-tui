@@ -4,6 +4,7 @@
 #include <chrono>
 #include <deque>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -39,11 +40,11 @@ struct SlowBlocksState {
     std::vector<BlockEvent>   blocks;
     std::vector<ChainTipInfo> tips;
     int64_t                   lines_parsed = 0;
-    std::string               status;           // "reading...", "tailing", "error: ..."
+    std::string               status; // "reading...", "tailing", "error: ..."
     std::optional<std::chrono::system_clock::time_point>
-        validating_since;  // set during slow validation
-    std::string warning;       // e.g. missing log categories
-    std::string lua_status;    // test output from Lua
+                validating_since; // set during slow validation
+    std::string warning;          // e.g. missing log categories
+    std::string lua_status;       // test output from Lua
 };
 
 class SlowBlocksTab : public Tab {
@@ -58,11 +59,12 @@ class SlowBlocksTab : public Tab {
     void           join() override;
 
   private:
-    std::string              debug_log_path_;
-    Guarded<SlowBlocksState> sb_state_;
-    Guarded<BlockTracker>    tracker_;
-    Guarded<LuaTableVec>     lua_tables_;
-    std::thread              log_thread_;
-    std::thread              rpc_thread_;
-    std::thread              tick_thread_;
+    std::string                 debug_log_path_;
+    const std::set<std::string> rpc_allowlist_;
+    Guarded<SlowBlocksState>    sb_state_;
+    Guarded<BlockTracker>       tracker_;
+    Guarded<LuaTableVec>        lua_tables_;
+    std::thread                 log_thread_;
+    std::thread                 rpc_thread_;
+    std::thread                 tick_thread_;
 };

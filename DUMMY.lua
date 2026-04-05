@@ -14,7 +14,8 @@ local x = 1
 
 local function update()
     x = x + 2
-    tui_key_hint("AJ: x=" .. tostring(x))
+    local sv = tui_rpc("getnetworkinfo")
+    tui_key_hint("AJ: x=" .. tostring(x) .. " " .. tostring(sv.subversion))
 end
 
 function init()

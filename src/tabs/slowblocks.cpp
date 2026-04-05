@@ -21,6 +21,28 @@ using Clock     = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 using namespace std::chrono_literals;
 
+const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
+    "estimatesmartfee",
+    "getblock",
+    "getblockchaininfo",
+    "getblockcount",
+    "getblockhash",
+    "getblockheader",
+    "getchaintips",
+    "getconnectioncount",
+    "getmempoolancestors",
+    "getmempooldescendants",
+    "getmempoolentry",
+    "getmempoolinfo",
+    "getmininginfo",
+    "getnettotals",
+    "getnetworkinfo",
+    "getpeerinfo",
+    "getrawmempool",
+    "logging",
+    "uptime",
+};
+
 namespace {
 
 double to_seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
@@ -511,12 +533,44 @@ struct LogWatch {
         : pattern(pat), callback(std::move(fn)) {}
 };
 
+// Convert a json value to a sol::object for returning RPC results to Lua.
+sol::object json_to_lua(sol::state& lua, const json& j) {
+    if (j.is_null())
+        return sol::nil;
+    if (j.is_bool())
+        return sol::make_object(lua, j.get<bool>());
+    if (j.is_number_integer())
+        return sol::make_object(lua, j.get<int64_t>());
+    if (j.is_number_float())
+        return sol::make_object(lua, j.get<double>());
+    if (j.is_string())
+        return sol::make_object(lua, j.get<std::string>());
+    if (j.is_array()) {
+        sol::table t = lua.create_table(static_cast<int>(j.size()), 0);
+        for (size_t i = 0; i < j.size(); ++i)
+            t[i + 1] = json_to_lua(lua, j[i]);
+        return t;
+    }
+    if (j.is_object()) {
+        sol::table t = lua.create_table(0, static_cast<int>(j.size()));
+        for (auto& [k, v] : j.items())
+            t[k] = json_to_lua(lua, v);
+        return t;
+    }
+    return sol::nil;
+}
+
 // Tick/Lua thread: wakes the UI once per second, runs Lua script, tails debug.log.
 void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wake_ui,
                     Guarded<SlowBlocksState>& sb_state, const std::string& debug_log_path,
-                    Guarded<LuaTableVec>& lua_tables) {
+                    Guarded<LuaTableVec>& lua_tables, RpcConfig rpc_cfg, Guarded<RpcAuth>& rpc_auth,
+                    const std::set<std::string>& rpc_allowlist) {
     sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math);
+    lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math,
+                       sol::lib::coroutine);
+
+    // tui_rpc yields from the coroutine; C++ catches the yield and does the RPC call.
+    lua.script("function tui_rpc(method, ...) return coroutine.yield('rpc', method, {...}) end");
 
     // Convert a Lua value to CellData based on column type
     auto to_cell_data = [](ColumnType type, const sol::object& v) -> CellData {
@@ -673,18 +727,60 @@ void tick_thread_fn(std::atomic<bool>& running, const std::function<void()>& wak
             logfile.clear();
         }
 
-        // Fire due timers
+        // Fire due timers (as coroutines, handling RPC yields)
         auto now = Clock::now();
         while (!timers.empty() && timers.begin()->first <= now) {
-            auto node   = timers.extract(timers.begin());
-            auto result = node.mapped().callback();
+            auto  node  = timers.extract(timers.begin());
+            auto& timer = node.mapped();
+
+            sol::thread    thread = sol::thread::create(lua);
+            sol::coroutine coro(thread.state(), timer.callback);
+
+            auto result = coro();
+            while (coro.status() == sol::call_status::yielded) {
+                // Extract RPC request from yielded values
+                std::string tag = result;
+                if (tag == "rpc" && result.return_count() >= 2) {
+                    std::string method = result.get<std::string>(1);
+                    if (!rpc_allowlist.contains(method)) {
+                        result = coro(sol::nil, "RPC method not allowed: " + method);
+                        continue;
+                    }
+                    std::vector<json> pv;
+                    if (result.return_count() >= 3) {
+                        sol::table args = result.get<sol::table>(2);
+                        for (size_t i = 1; i <= args.size(); ++i) {
+                            sol::object a = args[i];
+                            if (a.is<int64_t>())
+                                pv.emplace_back(a.as<int64_t>());
+                            else if (a.is<double>())
+                                pv.emplace_back(a.as<double>());
+                            else if (a.is<bool>())
+                                pv.emplace_back(a.as<bool>());
+                            else if (a.is<std::string>())
+                                pv.emplace_back(a.as<std::string>());
+                        }
+                    }
+                    json params(std::move(pv));
+                    try {
+                        RpcClient rpc(rpc_cfg, rpc_auth);
+                        json      rpc_response = rpc.call(method, params);
+                        result                 = coro(json_to_lua(lua, rpc_response["result"]));
+                    } catch (const std::exception& e) {
+                        result = coro(sol::nil, std::string(e.what()));
+                    }
+                } else {
+                    break; // unknown yield tag
+                }
+            }
             if (!result.valid()) {
                 sol::error err = result;
                 sb_state.update(
                     [&](auto& st) { st.lua_status = std::string("error: ") + err.what(); });
             }
+
             now        = Clock::now();
-            node.key() = std::max(now, node.key() + node.mapped().interval);
+            node.key() = std::max(now, node.key() + timer.interval);
             timers.insert(std::move(node));
         }
 
@@ -703,7 +799,7 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
                              std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
                              std::string debug_log_path)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
-      debug_log_path_(std::move(debug_log_path)) {
+      debug_log_path_(std::move(debug_log_path)), rpc_allowlist_(DEFAULT_RPC_ALLOWLIST) {
     auto      wake     = [&screen] { screen.PostEvent(ftxui::Event::Custom); };
     RpcConfig cfg_copy = cfg_;
 
@@ -714,7 +810,8 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
                               std::ref(running_), wake, std::move(cfg_copy), std::ref(auth_));
 
     tick_thread_ = std::thread(tick_thread_fn, std::ref(running_), wake, std::ref(sb_state_),
-                               std::cref(debug_log_path_), std::ref(lua_tables_));
+                               std::cref(debug_log_path_), std::ref(lua_tables_), cfg_,
+                               std::ref(auth_), std::cref(rpc_allowlist_));
 }
 
 Element SlowBlocksTab::key_hints(const AppState& snap) const {
