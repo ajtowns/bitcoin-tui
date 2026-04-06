@@ -1,3 +1,4 @@
+tui_set_name("Slow Blocks")
 
 -- Constants
 local TIP_DEPTH = 10000

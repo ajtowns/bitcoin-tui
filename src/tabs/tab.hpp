@@ -15,10 +15,11 @@ class Tab {
   public:
     Tab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
         std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs)
-        : cfg_{std::move(cfg)}, auth_{auth}, screen_{screen}, running_{running}, state_{state},
-          refresh_secs_{refresh_secs} {}
+        : cfg_{std::move(cfg)}, auth_{auth}, screen_{screen},
+          running_{running}, state_{state}, refresh_secs_{refresh_secs} {}
     virtual ~Tab() = default;
 
+    virtual std::string    name() const = 0;
     virtual ftxui::Element render(const AppState& snap) = 0;
     virtual ftxui::Element key_hints(const AppState& snap) const = 0;
     virtual void           join()                           = 0;

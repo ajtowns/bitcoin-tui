@@ -18,6 +18,7 @@ class PeersTab : public Tab {
              std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs);
     ~PeersTab() override = default;
 
+    std::string    name() const override { return "Peers"; }
     ftxui::Element render(const AppState& snap) override;
     ftxui::Element key_hints(const AppState& snap) const override;
     // Handles addnode input mode; call unconditionally (before tab navigation)

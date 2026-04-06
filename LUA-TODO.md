@@ -14,7 +14,6 @@
 ## Tab lifecycle
 - Tab loading via CLI (`--tab path.lua`), auto-load from `~/.config/bitcoin-tui/tabs/`
 - Multiple Lua tabs, each with own `sol::state` and thread
-- Tab name from script (e.g. `tui_set_name("Slow Blocks")`)
 
 ## Performance
 - Separate log thread (currently log tailing blocks timer dispatch during backlog)
