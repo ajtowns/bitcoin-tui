@@ -11,10 +11,6 @@
 ## Log watching
 - Structured LogEntry: parse level/category from bracket prefix (e.g. `[net]`, `[error]`)
 
-## Tab lifecycle
-- Tab loading via CLI (`--tab path.lua`), auto-load from `~/.config/bitcoin-tui/tabs/`
-- Multiple Lua tabs, each with own `sol::state` and thread
-
 ## Performance
 - Separate log thread (currently log tailing blocks timer dispatch during backlog)
 - Concurrent RPC: multiple coroutines in flight, resume whichever completes first

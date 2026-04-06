@@ -97,6 +97,7 @@ class Application {
     bool                     explicit_host = false;
     bool                     can_launch    = false;
     std::string              debug_log_file;
+    std::vector<std::string> lua_tabs;
 
     // Shared state
     mutable Guarded<AppState> state;
@@ -162,6 +163,8 @@ int Application::configure(int argc, char* argv[]) {
             network  = "signet";
         } else if (arg == "--debuglog") {
             debug_log_file = next();
+        } else if (arg == "--tab") {
+            lua_tabs.push_back(next());
         } else if (arg == "--bitcoind") {
             bitcoind_cmd = next();
         } else if (arg == "--version" || arg == "-v") {
@@ -192,6 +195,9 @@ int Application::configure(int argc, char* argv[]) {
                 "      --testnet          Use testnet3 port (18332) and cookie subdir\n"
                 "      --regtest          Use regtest  port (18443) and cookie subdir\n"
                 "      --signet           Use signet   port (38332) and cookie subdir\n"
+                "\n"
+                "Lua tabs:\n"
+                "      --tab <path.lua>   Load a Lua tab script (repeatable)\n"
                 "\n"
                 "Display:\n"
                 "  -r, --refresh <secs>   Refresh interval     (default: 5)\n"
@@ -257,9 +263,14 @@ int Application::run() const {
     std::string debug_log = debug_log_file.empty()
                                ? datadir + "/" + network_subdir(network) + "debug.log"
                                : debug_log_file;
-    SlowBlocksTab slowblocks_tab(cfg, auth, screen, running, state, refresh_secs, debug_log, "SLOWBLOCKS.lua");
+    std::vector<std::unique_ptr<SlowBlocksTab>> lua_tab_ptrs;
+    for (const auto& script : lua_tabs) {
+        lua_tab_ptrs.push_back(std::make_unique<SlowBlocksTab>(
+            cfg, auth, screen, running, state, refresh_secs, debug_log, script));
+    }
 
-    std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab, &slowblocks_tab};
+    std::vector<Tab*> tabs = {&dashboard_tab, &mempool_tab, &network_tab, &peers_tab, &tools_tab};
+    for (auto& p : lua_tab_ptrs) tabs.push_back(p.get());
 
     // Tab toggle
     std::vector<std::string> tab_labels;
