@@ -733,7 +733,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
             size_t   pad_lines = max_lines - hdr_lines[vi].size();
             for (size_t i = 0; i < pad_lines; ++i)
                 lines.push_back(text(""));
-            std::string prefix = (vi == 0) ? "" : " ";
+            std::string prefix = " ";
             for (const auto& line : hdr_lines[vi]) {
                 std::string s = line;
                 if (ralign[vi]) {
@@ -765,7 +765,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
                     const auto& cv = row.cells[vis[vi]];
                     std::string val =
                         format_cell(cols[vis[vi]].type, cv.data, cols[vis[vi]].decimals);
-                    std::string prefix = (vi == 0) ? "" : " ";
+                    std::string prefix = " ";
                     if (ralign[vi]) {
                         int pad = widths[vi] - static_cast<int>(val.size()) -
                                   static_cast<int>(prefix.size());
