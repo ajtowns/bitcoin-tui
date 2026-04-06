@@ -33,7 +33,8 @@ function tui_wake(handle) end
 
 --- Set the tab name displayed in the tab bar. Can only be called
 --- during script loading (top-level code); calling it from a
---- callback raises an error.
+--- callback raises an error. The name takes effect immediately,
+--- so it persists even if the script fails to load.
 ---@param name string
 function tui_set_name(name) end
 
@@ -95,6 +96,16 @@ function Table:remove(key) end
 --- Return all current keys as an array of strings.
 ---@return string[]
 function Table:keys() end
+
+--- Start a refresh cycle. Bumps the internal epoch counter.
+--- Subsequent update() calls stamp rows with the new epoch.
+--- Call finish_refresh() after all updates to remove stale rows.
+function Table:start_refresh() end
+
+--- Finish a refresh cycle. Removes all rows whose epoch does not
+--- match the current epoch (i.e., rows not touched since the last
+--- start_refresh() call).
+function Table:finish_refresh() end
 
 ----------------------------------------------------------------------
 -- Table options

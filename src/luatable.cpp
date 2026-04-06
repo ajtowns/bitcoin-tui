@@ -80,7 +80,7 @@ LuaTable::LuaTable(const std::string& key_column, std::vector<ColumnDef> columns
                    bool no_header)
     : columns_(ensure_key_column(std::move(columns), key_column)), title_(std::move(title)),
       no_header_(no_header), key_index_(col_index(key_column)),
-      rows_(std::set<Row, RowCompare>(RowCompare{key_index_})) {}
+      rows_(RowData{std::set<Row, RowCompare>(RowCompare{key_index_}), 0}) {}
 
 size_t LuaTable::col_index(const std::string& name) const {
     for (size_t i = 0; i < columns_.size(); ++i) {
@@ -104,23 +104,24 @@ void LuaTable::update(const CellData& key, const std::map<std::string, CellValue
         }
     }
 
-    rows_.update([&](auto& rows) {
+    rows_.update([&](auto& rd) {
         // Remove existing row with this key
-        for (auto it = rows.begin(); it != rows.end(); ++it) {
+        for (auto it = rd.rows.begin(); it != rd.rows.end(); ++it) {
             if (it->cells[key_index_].data == key) {
-                rows.erase(it);
+                rd.rows.erase(it);
                 break;
             }
         }
-        rows.insert(std::move(row));
+        row.epoch = rd.current_epoch;
+        rd.rows.insert(std::move(row));
     });
 }
 
 bool LuaTable::remove(const CellData& key) {
-    return rows_.update([&](auto& rows) {
-        for (auto it = rows.begin(); it != rows.end(); ++it) {
+    return rows_.update([&](auto& rd) {
+        for (auto it = rd.rows.begin(); it != rd.rows.end(); ++it) {
             if (it->cells[key_index_].data == key) {
-                rows.erase(it);
+                rd.rows.erase(it);
                 return true;
             }
         }
@@ -128,11 +129,21 @@ bool LuaTable::remove(const CellData& key) {
     });
 }
 
+void LuaTable::start_refresh() {
+    rows_.update([](auto& rd) { ++rd.current_epoch; });
+}
+
+void LuaTable::finish_refresh() {
+    rows_.update([](auto& rd) {
+        std::erase_if(rd.rows, [&](const auto& row) { return row.epoch != rd.current_epoch; });
+    });
+}
+
 std::vector<std::string> LuaTable::keys() const {
-    return rows_.access([&](const auto& rows) {
+    return rows_.access([&](const auto& rd) {
         std::vector<std::string> result;
-        result.reserve(rows.size());
-        for (const auto& row : rows) {
+        result.reserve(rd.rows.size());
+        for (const auto& row : rd.rows) {
             result.push_back(format_cell(columns_[key_index_].type, row.cells[key_index_].data));
         }
         return result;

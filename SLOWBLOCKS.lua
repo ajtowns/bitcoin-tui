@@ -3,6 +3,7 @@ tui_set_name("Slow Blocks")
 -- Constants
 local TIP_DEPTH = 10000
 local BLOCK_DISPLAY_DEPTH = 15
+local BLOCK_TRACK_DEPTH = 100
 
 -- Block tracking state
 local blocks = {}             -- hash -> block info
@@ -162,6 +163,7 @@ local tips_timer = tui_set_interval(30, function()
     end
 
     local row = 1
+    tip_table:start_refresh()
     for _, tip in ipairs(chaintips) do
         if active_hash and tip.height >= active_height - TIP_DEPTH then
             local letter
@@ -175,7 +177,7 @@ local tips_timer = tui_set_interval(30, function()
                 })
             else
                 row = row + 1
-                letter = string.char(row + 96)
+                letter = string.char(math.min(row, 26) + 96)
                 local status = tip.status
                 if status == "valid-fork" or status == "valid-headers" then
                     status = { value = status, color = "yellow" }
@@ -190,7 +192,7 @@ local tips_timer = tui_set_interval(30, function()
             tips[tip.hash] = { letter = letter, height = tip.height, status = tip.status }
         end
     end
-    while tip_table:remove(row + 1) do row = row + 1 end
+    tip_table:finish_refresh()
 
     cached_chaintips = chaintips
     cached_tips = tips
@@ -202,6 +204,22 @@ end)
 ----------------------------------------------------------------------
 
 tui_set_interval(1, function()
+    -- Prune blocks well below display depth
+    if cached_active_height > 0 and #block_order > BLOCK_TRACK_DEPTH then
+        local cutoff = cached_active_height - BLOCK_TRACK_DEPTH
+        local new_order = {}
+        for _, hash in ipairs(block_order) do
+            local b = blocks[hash]
+            if b and b.height and b.height < cutoff then
+                blocks[hash] = nil
+            else
+                table.insert(new_order, hash)
+            end
+        end
+        block_order = new_order
+    end
+
+    -- Enrich blocks missing data
     for _, hash in ipairs(block_order) do
         local b = blocks[hash]
         if b and not b.prev then
@@ -222,9 +240,11 @@ end)
 tui_set_interval(1, function()
     if cached_active_height == 0 then return end
     local codes = tip_codes(cached_chaintips, cached_tips)
+
+    block_table:start_refresh()
     for idx, hash in ipairs(block_order) do
         local b = blocks[hash]
-        if b and b.height >= cached_active_height - BLOCK_DISPLAY_DEPTH then
+        if b and b.height and b.height >= cached_active_height - BLOCK_DISPLAY_DEPTH then
             local delta = nil
             if b.time_block and b.time_header then delta = b.time_block - b.time_header end
             local compact = ""
@@ -256,6 +276,7 @@ tui_set_interval(1, function()
             }))
         end
     end
+    block_table:finish_refresh()
 end)
 
 ----------------------------------------------------------------------

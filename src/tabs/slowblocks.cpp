@@ -291,7 +291,9 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
         },
         "remove",
         [](LuaTable& self, const sol::object& key) { return self.remove(LuaScript::to_key(self, key)); },
-        "keys", &LuaTable::keys);
+        "keys", &LuaTable::keys,
+        "start_refresh", &LuaTable::start_refresh,
+        "finish_refresh", &LuaTable::finish_refresh);
 
     lua_["tui_watch_log"] = [&script](const std::string& pattern, sol::protected_function fn,
                                       sol::optional<int64_t> backlog) {

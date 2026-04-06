@@ -1,7 +1,6 @@
 # Lua Tabs — TODO
 
 ## Table features
-- Epoch-based refresh: `start_refresh()` before update loop, auto-sweep stale rows after
 - Extra header info per table next to header (e.g. log status, line count)
 
 ## Log watching

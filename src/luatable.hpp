@@ -35,6 +35,7 @@ struct CellValue {
 };
 
 struct Row {
+    int epoch{0};
     std::vector<CellValue> cells;
 };
 
@@ -45,6 +46,11 @@ struct RowCompare {
     }
 };
 
+struct RowData {
+    std::set<Row, RowCompare> rows;
+    int current_epoch{0};
+};
+
 class LuaTable {
   public:
     LuaTable(const std::string& key_column, std::vector<ColumnDef> columns, std::string title = {},
@@ -52,6 +58,8 @@ class LuaTable {
 
     void update(const CellData& key, const std::map<std::string, CellValue>& data);
     bool remove(const CellData& key);
+    void start_refresh();
+    void finish_refresh();
 
     std::vector<std::string> keys() const;
 
@@ -63,14 +71,16 @@ class LuaTable {
     ColumnType key_type() const { return columns_[key_index_].type; }
 
     // Thread-safe access to rows
-    template <typename F> auto access(F&& f) const { return rows_.access(std::forward<F>(f)); }
+    template <typename F> auto access(F&& f) const {
+        return rows_.access([&](const auto& rd) { return f(rd.rows); });
+    }
 
   private:
     const std::vector<ColumnDef>       columns_;
     const std::string                  title_;
     const bool                         no_header_;
     const size_t                       key_index_;
-    Guarded<std::set<Row, RowCompare>> rows_;
+    Guarded<RowData>                   rows_;
 
     size_t col_index(const std::string& name) const;
 };
