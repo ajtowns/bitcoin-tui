@@ -62,7 +62,12 @@ struct LogWatch {
           backlog_bytes(std::max(int64_t{0}, backlog)), callback(std::move(fn)) {}
 };
 
+struct TimerHandle {
+    int id;
+};
+
 struct LuaTimer {
+    int                     id;
     Clock::duration         interval;
     sol::protected_function callback;
 };
@@ -79,6 +84,9 @@ class LuaScript {
     std::vector<std::unique_ptr<LogWatch>>& log_watches() { return log_watches_; }
     std::map<TimePoint, LuaTimer>&          timers() { return timers_; }
 
+    TimerHandle add_timer(Clock::duration interval, sol::protected_function fn);
+    void        wake(const TimerHandle& h);
+
     sol::object json_to_lua(const json& j);
 
     static CellData to_cell_data(ColumnType type, int decimals, const sol::object& v);
@@ -88,12 +96,31 @@ class LuaScript {
     sol::state                             lua_;
     std::vector<std::unique_ptr<LogWatch>> log_watches_;
     std::map<TimePoint, LuaTimer>          timers_;
+    int                                    next_timer_id_ = 0;
 };
 
 LuaScript::LuaScript() {
     lua_.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math,
                         sol::lib::coroutine);
     lua_.script("function tui_rpc(method, ...) return coroutine.yield('rpc', method, {...}) end");
+}
+
+TimerHandle LuaScript::add_timer(Clock::duration interval, sol::protected_function fn) {
+    int id = ++next_timer_id_;
+    timers_.insert({Clock::now() + interval, {id, interval, std::move(fn)}});
+    return {id};
+}
+
+void LuaScript::wake(const TimerHandle& h) {
+    for (auto it = timers_.begin(); it != timers_.end(); ++it) {
+        if (it->second.id == h.id) {
+            auto node  = timers_.extract(it);
+            node.key() = TimePoint::min();
+            timers_.insert(std::move(node));
+            return;
+        }
+    }
+    throw std::runtime_error("tui_wake: invalid timer handle");
 }
 
 void LuaScript::load(const std::string& script_path) {
@@ -230,10 +257,16 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
         sb_state_.update([&](auto& st) { st.lua_status = hint; });
     };
 
-    lua_["tui_set_interval"] = [&script](double secs, sol::protected_function fn) {
+    lua_.new_usertype<TimerHandle>("TimerHandle", sol::no_constructor);
+
+    lua_["tui_set_interval"] = [&script](double secs, sol::protected_function fn) -> TimerHandle {
         auto interval =
             std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(secs));
-        script.timers().insert({Clock::now() + interval, {interval, std::move(fn)}});
+        return script.add_timer(interval, std::move(fn));
+    };
+
+    lua_["tui_wake"] = [&script](const TimerHandle& h) {
+        script.wake(h);
     };
 
     lua_["tui_set_name"] = [this](const std::string& name) {

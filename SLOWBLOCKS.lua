@@ -9,6 +9,11 @@ local blocks = {}             -- hash -> block info
 local block_order = {}        -- array of hashes in arrival order
 local pending_connect_secs = nil
 
+-- Cached chain tips (fetched by tips timer, used by display timer)
+local cached_chaintips = {}
+local cached_tips = {}        -- hash -> { letter, height, status }
+local cached_active_height = 0
+
 local function get_or_create_block(ts, hash)
     local b = blocks[hash]
     if not b then
@@ -71,7 +76,7 @@ local log_table = tui_table({
 })
 
 ----------------------------------------------------------------------
--- Periodic update: enrich blocks via RPC, refresh display tables
+-- Display helpers
 ----------------------------------------------------------------------
 
 local function embolden(v)
@@ -108,6 +113,20 @@ local function num_color(n, max_green, max_yellow)
     end
 end
 
+local function code_color(code)
+    if code ~= nil and code:sub(1, 1) == "A" then return { value = code, color = "cyan" } end
+    return code
+end
+
+local function abbrev_hash(h)
+    if h == nil then return h end
+    return h:sub(1, 8) .. "..." .. h:sub(-12)
+end
+
+----------------------------------------------------------------------
+-- Chain tips timer: fetch via RPC, update cached state + tip table
+----------------------------------------------------------------------
+
 -- Build tip code strings for each block hash (e.g. "A", "Ab", " b")
 local function tip_codes(chaintips, tips)
     local codes = {}
@@ -128,31 +147,10 @@ local function tip_codes(chaintips, tips)
     return codes
 end
 
-local function code_color(code)
-    if code ~= nil and code:sub(1, 1) == "A" then return { value = code, color = "cyan" } end
-    return code
-end
+local tips_timer = tui_set_interval(30, function()
+    local chaintips = tui_rpc("getchaintips")
+    if not chaintips then return end
 
-local function enrich_blocks()
-    for _, hash in ipairs(block_order) do
-        local b = blocks[hash]
-        if b and not b.prev then
-            local hdr = tui_rpc("getblockheader", hash)
-            if hdr then b.prev = hdr.previousblockhash end
-        end
-        if b and not b.size then
-            local blk = tui_rpc("getblock", hash, 1)
-            if blk and blk.size then b.size = blk.size / 1000; b.tx_count = blk.nTx end
-        end
-    end
-end
-
-local function abbrev_hash(h)
-    if h == nil then return h end
-    return h:sub(1, 8) .. "..." .. h:sub(-12)
-end
-
-local function refresh_tips(chaintips)
     local tips = {}
     local active_hash = nil
     local active_height = 0
@@ -194,14 +192,39 @@ local function refresh_tips(chaintips)
     end
     while tip_table:remove(row + 1) do row = row + 1 end
 
-    return tips, active_height
-end
+    cached_chaintips = chaintips
+    cached_tips = tips
+    cached_active_height = active_height
+end)
 
-local function refresh_blocks(chaintips, tips, active_height)
-    local codes = tip_codes(chaintips, tips)
+----------------------------------------------------------------------
+-- Enrich timer: fill in missing block data via RPC
+----------------------------------------------------------------------
+
+tui_set_interval(1, function()
+    for _, hash in ipairs(block_order) do
+        local b = blocks[hash]
+        if b and not b.prev then
+            local hdr = tui_rpc("getblockheader", hash)
+            if hdr then b.prev = hdr.previousblockhash end
+        end
+        if b and not b.size then
+            local blk = tui_rpc("getblock", hash, 1)
+            if blk and blk.size then b.size = blk.size / 1000; b.tx_count = blk.nTx end
+        end
+    end
+end)
+
+----------------------------------------------------------------------
+-- Display timer: refresh block table from cached data (no RPCs)
+----------------------------------------------------------------------
+
+tui_set_interval(1, function()
+    if cached_active_height == 0 then return end
+    local codes = tip_codes(cached_chaintips, cached_tips)
     for idx, hash in ipairs(block_order) do
         local b = blocks[hash]
-        if b and b.height >= active_height - BLOCK_DISPLAY_DEPTH then
+        if b and b.height >= cached_active_height - BLOCK_DISPLAY_DEPTH then
             local delta = nil
             if b.time_block and b.time_header then delta = b.time_block - b.time_header end
             local compact = ""
@@ -233,21 +256,10 @@ local function refresh_blocks(chaintips, tips, active_height)
             }))
         end
     end
-end
-
-local function update()
-    local chaintips = tui_rpc("getchaintips")
-    enrich_blocks()
-    local tips, active_height = refresh_tips(chaintips)
-    if active_height > 0 then
-        refresh_blocks(chaintips, tips, active_height)
-    end
-end
-
-tui_set_interval(1, update)
+end)
 
 ----------------------------------------------------------------------
--- Block updates
+-- Block updates (log watchers)
 ----------------------------------------------------------------------
 
 local BACKLOG = 2 * 1024 * 1024
@@ -286,6 +298,7 @@ tui_watch_log("UpdateTip: new best=(\\w+) height=(\\d+)", function(ts, msg, hash
         b.validation_secs = pending_connect_secs
         pending_connect_secs = nil
     end
+    tui_wake(tips_timer)
 end, BACKLOG)
 
 ----------------------------------------------------------------------
