@@ -3,6 +3,7 @@
 #include <chrono>
 #include <fstream>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -64,14 +65,27 @@ struct RpcResponse {
 
 namespace {
 
+std::string lua_source_id(lua_State* L) {
+    lua_Debug ar;
+    if (lua_getstack(L, 1, &ar) && lua_getinfo(L, "Sl", &ar)) {
+        std::string src = ar.source;
+        if (!src.empty() && src[0] == '@') src = src.substr(1);
+        return src + ":" + std::to_string(ar.currentline);
+    }
+    return "unknown";
+}
+
 struct LogWatch {
+    int                     id;
     RE2                     pattern;
     int                     ngroups;
     int64_t                 backlog_bytes;
     sol::protected_function callback;
-    LogWatch(const std::string& pat, sol::protected_function fn, int64_t backlog = 0)
-        : pattern(pat), ngroups(pattern.NumberOfCapturingGroups()),
-          backlog_bytes(std::max(int64_t{0}, backlog)), callback(std::move(fn)) {}
+    std::string             source_id;
+    LogWatch(int id, const std::string& pat, sol::protected_function fn, std::string src, int64_t backlog = 0)
+        : id(id), pattern(pat), ngroups(pattern.NumberOfCapturingGroups()),
+          backlog_bytes(std::max(int64_t{0}, backlog)), callback(std::move(fn)),
+          source_id(std::move(src)) {}
 };
 
 struct TimerHandle {
@@ -82,14 +96,13 @@ struct LuaTimer {
     int                     id;
     Clock::duration         interval;
     sol::protected_function callback;
+    std::string             source_id;
 };
 
 struct PendingCoroutine {
     sol::thread             lua_thread;
     sol::coroutine          coro;
-    int                     timer_id;
-    Clock::duration         timer_interval;
-    sol::protected_function timer_callback;
+    LuaTimer                timer;
     int                     rpc_id;
     bool                    wake_pending = false;
 };
@@ -100,13 +113,15 @@ class LuaScript {
   public:
     LuaScript();
 
-    void load(const std::string& script_path);
+    sol::protected_function_result load(const std::string& script_path);
 
     sol::state&                             lua() { return lua_; }
     std::vector<std::unique_ptr<LogWatch>>& log_watches() { return log_watches_; }
     std::map<TimePoint, LuaTimer>&          timers() { return timers_; }
 
-    TimerHandle add_timer(Clock::duration interval, sol::protected_function fn);
+    void        add_log_watch(const std::string& pattern, sol::protected_function fn,
+                              std::string source_id, int64_t backlog);
+    TimerHandle add_timer(Clock::duration interval, sol::protected_function fn, std::string source_id);
     void        wake(const TimerHandle& h);
     void        set_pending(std::vector<PendingCoroutine>* p) { pending_ = p; }
 
@@ -115,12 +130,19 @@ class LuaScript {
     static CellData to_cell_data(ColumnType type, int decimals, const sol::object& v);
     static CellData to_key(LuaTable& self, const sol::object& v);
 
+    std::vector<LuaError>& warnings() { return warnings_; }
+
+    void add_warning(std::string source_id, std::string msg) {
+        warnings_.push_back({std::move(source_id), std::move(msg), Clock::now()});
+    }
+
   private:
     sol::state                             lua_;
     std::vector<std::unique_ptr<LogWatch>> log_watches_;
     std::map<TimePoint, LuaTimer>          timers_;
-    int                                    next_timer_id_ = 0;
+    int                                    next_callback_id_ = 0;
     std::vector<PendingCoroutine>*         pending_ = nullptr;
+    std::vector<LuaError>                  warnings_;
 };
 
 LuaScript::LuaScript() {
@@ -129,9 +151,16 @@ LuaScript::LuaScript() {
     lua_.script("function tui_rpc(method, ...) return coroutine.yield('rpc', method, {...}) end");
 }
 
-TimerHandle LuaScript::add_timer(Clock::duration interval, sol::protected_function fn) {
-    int id = ++next_timer_id_;
-    timers_.insert({Clock::now() + interval, {id, interval, std::move(fn)}});
+void LuaScript::add_log_watch(const std::string& pattern, sol::protected_function fn,
+                              std::string source_id, int64_t backlog) {
+    int id = ++next_callback_id_;
+    log_watches_.push_back(
+        std::make_unique<LogWatch>(id, pattern, std::move(fn), std::move(source_id), backlog));
+}
+
+TimerHandle LuaScript::add_timer(Clock::duration interval, sol::protected_function fn, std::string source_id) {
+    int id = ++next_callback_id_;
+    timers_.insert({Clock::now() + interval, {id, interval, std::move(fn), std::move(source_id)}});
     return {id};
 }
 
@@ -146,7 +175,7 @@ void LuaScript::wake(const TimerHandle& h) {
     }
     if (pending_) {
         for (auto& pc : *pending_) {
-            if (pc.timer_id == h.id) {
+            if (pc.timer.id == h.id) {
                 pc.wake_pending = true;
                 return;
             }
@@ -155,8 +184,8 @@ void LuaScript::wake(const TimerHandle& h) {
     throw std::runtime_error("tui_wake: invalid timer handle");
 }
 
-void LuaScript::load(const std::string& script_path) {
-    lua_.safe_script_file(script_path, sol::script_pass_on_error);
+sol::protected_function_result LuaScript::load(const std::string& script_path) {
+    return lua_.safe_script_file(script_path, sol::script_pass_on_error);
 }
 
 sol::object LuaScript::json_to_lua(const json& j) {
@@ -219,6 +248,10 @@ CellData LuaScript::to_key(LuaTable& self, const sol::object& v) {
 
 void SlowBlocksTab::register_lua_api(LuaScript& script) {
     auto& lua_ = script.lua();
+
+    lua_["tui_error"] = [&script](sol::this_state ts, const std::string& msg) {
+        script.add_warning(lua_source_id(ts.L), msg);
+    };
     lua_.new_usertype<LuaTable>(
         "LuaTable", "update",
         [](LuaTable& self, const sol::object& key, sol::table data) {
@@ -256,8 +289,8 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
 
     lua_["tui_watch_log"] = [&script](const std::string& pattern, sol::protected_function fn,
                                       sol::optional<int64_t> backlog) {
-        script.log_watches().push_back(
-            std::make_unique<LogWatch>(pattern, std::move(fn), backlog.value_or(0)));
+        auto src = lua_source_id(fn.lua_state());
+        script.add_log_watch(pattern, std::move(fn), std::move(src), backlog.value_or(0));
     };
 
     lua_["tui_table"] = [this](sol::table opts) -> std::shared_ptr<LuaTable> {
@@ -292,9 +325,10 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
     lua_.new_usertype<TimerHandle>("TimerHandle", sol::no_constructor);
 
     lua_["tui_set_interval"] = [&script](double secs, sol::protected_function fn) -> TimerHandle {
+        auto src      = lua_source_id(fn.lua_state());
         auto interval =
             std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(secs));
-        return script.add_timer(interval, std::move(fn));
+        return script.add_timer(interval, std::move(fn), std::move(src));
     };
 
     lua_["tui_wake"] = [&script](const TimerHandle& h) {
@@ -415,7 +449,9 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         }
         if (!result.valid()) {
             sol::error err = result;
-            report_error(std::string("error: ") + err.what());
+            report_callback_error(pc.timer.id, pc.timer.source_id, err.what());
+        } else {
+            clear_callback_error(pc.timer.id);
         }
         return std::nullopt;
     };
@@ -468,7 +504,13 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                         for (int i = 0; i < n; ++i) {
                             vr.push_back({lua, sol::in_place, captures[i]});
                         }
-                        lw->callback(std::move(vr));
+                        auto result = lw->callback(std::move(vr));
+                        if (!result.valid()) {
+                            sol::error err = result;
+                            report_callback_error(lw->id, lw->source_id, err.what());
+                        } else {
+                            clear_callback_error(lw->id);
+                        }
                     }
                 }
             }
@@ -490,8 +532,8 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             if (new_rpc_id) {
                 it->rpc_id = *new_rpc_id;
             } else {
-                auto next = it->wake_pending ? TimePoint::min() : Clock::now() + it->timer_interval;
-                timers.insert({next, {it->timer_id, it->timer_interval, std::move(it->timer_callback)}});
+                auto next = it->wake_pending ? TimePoint::min() : Clock::now() + it->timer.interval;
+                timers.insert({next, std::move(it->timer)});
                 pending.erase(it);
             }
         }
@@ -516,7 +558,7 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
                         int rpc_id = submit_rpc(method, extract_rpc_params(result));
                         pending.push_back({
                             std::move(thread), std::move(coro),
-                            timer.id, timer.interval, std::move(timer.callback),
+                            std::move(timer),
                             rpc_id
                         });
                         now = Clock::now();
@@ -526,14 +568,25 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             }
             if (!result.valid()) {
                 sol::error err = result;
-                report_error(std::string("error: ") + err.what());
+                report_callback_error(timer.id, timer.source_id, err.what());
+            } else {
+                clear_callback_error(timer.id);
             }
             now        = Clock::now();
             node.key() = std::max(now, node.key() + timer.interval);
             timers.insert(std::move(node));
         }
 
-        // 4. Wake UI
+        // 4. Flush warnings into shared state, expire old ones
+        auto& warns = script->warnings();
+        auto  cutoff = Clock::now() - std::chrono::seconds(20);
+        sb_state_.update([&](auto& st) {
+            for (auto& w : warns) st.warnings.push_back(std::move(w));
+            std::erase_if(st.warnings, [&](const auto& w) { return w.when < cutoff; });
+        });
+        warns.clear();
+
+        // 5. Wake UI
         wake_ui();
 
         // 5. Sleep — wait for RPC response or next timer, cap at 1s for log polling
@@ -555,7 +608,14 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
     auto script = std::make_unique<LuaScript>();
     sb_state_.update([&](auto& st) { st.tab_name = lua_script; });
     register_lua_api(*script);
-    script->load(lua_script);
+    auto result = script->load(lua_script);
+    if (!result.valid()) {
+        sol::error err = result;
+        sb_state_.update([&](auto& st) {
+            st.init_error = LuaError{lua_script, err.what(), Clock::now()};
+        });
+        return;
+    }
     script->lua()["tui_set_name"] = [](const std::string&) {
         throw std::runtime_error("tui_set_name() can only be called during script loading");
     };
@@ -566,8 +626,12 @@ std::string SlowBlocksTab::name() const {
     return sb_state_.access([](const auto& s) { return s.tab_name; });
 }
 
-void SlowBlocksTab::report_error(const std::string& msg) {
-    sb_state_.update([&](auto& st) { st.lua_status = msg; });
+void SlowBlocksTab::report_callback_error(int id, const std::string& source_id, const std::string& msg) {
+    sb_state_.update([&](auto& st) { st.callback_errors[id] = {source_id, msg, Clock::now()}; });
+}
+
+void SlowBlocksTab::clear_callback_error(int id) {
+    sb_state_.update([&](auto& st) { st.callback_errors.erase(id); });
 }
 
 Element SlowBlocksTab::key_hints(const AppState& snap) const {
@@ -727,6 +791,41 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     }
 
     Elements panels;
+
+    auto [init_err, errors, warnings] = sb_state_.access(
+        [](const auto& s) { return std::make_tuple(s.init_error, s.callback_errors, s.warnings); });
+    if (init_err || !errors.empty() || !warnings.empty()) {
+        auto format_entry = [](Elements& rows, const LuaError& err) {
+            auto t  = Clock::to_time_t(err.when);
+            auto tm = *std::localtime(&t);
+            char ts[9];
+            std::strftime(ts, sizeof(ts), "%H:%M:%S", &tm);
+            std::string prefix = " " + std::string(ts) + " " + err.source_id + ": ";
+            if (err.message.find('\n') == std::string::npos) {
+                rows.push_back(
+                    hbox({text(prefix) | bold, paragraph(err.message)}) | color(Color::White));
+            } else {
+                rows.push_back(text(prefix) | bold | color(Color::White));
+                std::istringstream ss(err.message);
+                std::string        line;
+                while (std::getline(ss, line)) {
+                    rows.push_back(paragraph("    " + line) | color(Color::White));
+                }
+            }
+        };
+        Elements err_rows;
+        err_rows.push_back(text(""));
+        if (init_err) {
+            err_rows.push_back(
+                text(" Script initialization failed -- tab inactive") | bold | color(Color::Yellow));
+            err_rows.push_back(text(""));
+        }
+        if (init_err) format_entry(err_rows, *init_err);
+        for (const auto& [id, err] : errors) format_entry(err_rows, err);
+        for (const auto& w : warnings) format_entry(err_rows, w);
+        panels.push_back(section_box("ERRORS", std::move(err_rows)) | color(Color::Red));
+    }
+
     for (auto& lp : lua_panels) {
         panels.push_back(std::move(lp));
     }
