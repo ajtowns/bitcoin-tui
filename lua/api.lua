@@ -18,9 +18,24 @@ function tui_table(opts) end
 
 --- Register a periodic timer callback. The callback runs as a
 --- coroutine — tui_rpc() yields transparently within it.
+--- Returns an opaque TimerHandle that can be passed to tui_wake().
 ---@param seconds number   Interval in seconds
 ---@param callback function  Called each interval
+---@return TimerHandle
 function tui_set_interval(seconds, callback) end
+
+--- Wake a timer so it fires on the next loop iteration, regardless
+--- of its normal interval. If the timer's callback is currently
+--- running (waiting for an RPC), the wake is deferred until the
+--- current invocation finishes.
+---@param handle TimerHandle
+function tui_wake(handle) end
+
+--- Set the tab name displayed in the tab bar. Can only be called
+--- during script loading (top-level code); calling it from a
+--- callback raises an error.
+---@param name string
+function tui_set_name(name) end
 
 --- Register a log pattern callback. The pattern uses RE2 syntax and
 --- is matched against the message portion of each debug.log line.
@@ -32,8 +47,10 @@ function tui_set_interval(seconds, callback) end
 function tui_watch_log(pattern, callback, backlog) end
 
 --- Call a Bitcoin Core RPC method. Can only be called from within a
---- tui_set_interval callback (yields the coroutine). Returns the
---- parsed JSON result directly. Returns nil, errmsg on error.
+--- tui_set_interval callback (yields the coroutine). The RPC is
+--- dispatched to a background thread, so other timers and log
+--- callbacks continue to run while waiting. Returns the parsed
+--- JSON result directly, or nil on error.
 ---@param method string   RPC method name (must be in the allowlist)
 ---@param ... any         Method parameters
 ---@return any
@@ -42,6 +59,13 @@ function tui_rpc(method, ...) end
 --- Set the status line hint text (displayed in the tab bar).
 ---@param text string
 function tui_key_hint(text) end
+
+----------------------------------------------------------------------
+-- Timer handle
+----------------------------------------------------------------------
+
+--- Opaque handle returned by tui_set_interval, used with tui_wake.
+---@class TimerHandle
 
 ----------------------------------------------------------------------
 -- Table object

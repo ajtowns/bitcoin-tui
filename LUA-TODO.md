@@ -12,8 +12,6 @@
 - Structured LogEntry: parse level/category from bracket prefix (e.g. `[net]`, `[error]`)
 
 ## Performance
-- Separate log thread (currently log tailing blocks timer dispatch during backlog)
-- Concurrent RPC: multiple coroutines in flight, resume whichever completes first
 - Hidden tab behaviour: skip/throttle timers when tab not visible
 - Memory management: track Lua heap + table sizes, kill tab if over limit
 

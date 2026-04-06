@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <set>
 #include <string>
@@ -19,6 +20,8 @@ struct SlowBlocksState {
 };
 
 class LuaScript;
+struct RpcRequest;
+struct RpcResponse;
 
 class SlowBlocksTab : public Tab {
   public:
@@ -34,6 +37,8 @@ class SlowBlocksTab : public Tab {
 
   private:
     void lua_thread_fn(std::unique_ptr<LuaScript> script);
+    void rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>& requests,
+                       WaitableGuarded<std::deque<RpcResponse>>& responses);
     void register_lua_api(LuaScript& script);
     void report_error(const std::string& msg);
 

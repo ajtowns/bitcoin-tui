@@ -50,6 +50,18 @@ static const std::set<std::string> DEFAULT_RPC_ALLOWLIST = {
     "uptime",
 };
 
+struct RpcRequest {
+    int         id;
+    std::string method;
+    json        params;
+};
+
+struct RpcResponse {
+    int         id;
+    json        result;
+    std::string error;
+};
+
 namespace {
 
 struct LogWatch {
@@ -72,6 +84,16 @@ struct LuaTimer {
     sol::protected_function callback;
 };
 
+struct PendingCoroutine {
+    sol::thread             lua_thread;
+    sol::coroutine          coro;
+    int                     timer_id;
+    Clock::duration         timer_interval;
+    sol::protected_function timer_callback;
+    int                     rpc_id;
+    bool                    wake_pending = false;
+};
+
 } // namespace
 
 class LuaScript {
@@ -86,6 +108,7 @@ class LuaScript {
 
     TimerHandle add_timer(Clock::duration interval, sol::protected_function fn);
     void        wake(const TimerHandle& h);
+    void        set_pending(std::vector<PendingCoroutine>* p) { pending_ = p; }
 
     sol::object json_to_lua(const json& j);
 
@@ -97,6 +120,7 @@ class LuaScript {
     std::vector<std::unique_ptr<LogWatch>> log_watches_;
     std::map<TimePoint, LuaTimer>          timers_;
     int                                    next_timer_id_ = 0;
+    std::vector<PendingCoroutine>*         pending_ = nullptr;
 };
 
 LuaScript::LuaScript() {
@@ -118,6 +142,14 @@ void LuaScript::wake(const TimerHandle& h) {
             node.key() = TimePoint::min();
             timers_.insert(std::move(node));
             return;
+        }
+    }
+    if (pending_) {
+        for (auto& pc : *pending_) {
+            if (pc.timer_id == h.id) {
+                pc.wake_pending = true;
+                return;
+            }
         }
     }
     throw std::runtime_error("tui_wake: invalid timer handle");
@@ -274,10 +306,66 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
     };
 }
 
+void SlowBlocksTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>& requests,
+                                  WaitableGuarded<std::deque<RpcResponse>>& responses) {
+    while (running_) {
+        auto req = requests.access_when(
+            [&](auto& q) { return !q.empty() || !running_; },
+            [](auto& q) -> std::optional<RpcRequest> {
+                if (q.empty()) return std::nullopt;
+                auto r = std::move(q.front());
+                q.pop_front();
+                return r;
+            });
+        if (!req) continue;
+
+        RpcResponse resp{req->id, {}, {}};
+        try {
+            RpcClient rpc(cfg_, auth_);
+            json      rpc_result = rpc.call(req->method, req->params);
+            resp.result = rpc_result["result"];
+        } catch (const std::exception& e) {
+            resp.error = e.what();
+        }
+
+        responses.update_and_notify([&](auto& q) { q.push_back(std::move(resp)); });
+    }
+}
+
+// Extract RPC params from a yielded coroutine result
+static json extract_rpc_params(const sol::protected_function_result& result) {
+    std::vector<json> pv;
+    if (result.return_count() >= 3) {
+        sol::table args = result.get<sol::table>(2);
+        for (size_t i = 1; i <= args.size(); ++i) {
+            sol::object a = args[i];
+            if (a.is<int64_t>())
+                pv.emplace_back(a.as<int64_t>());
+            else if (a.is<double>())
+                pv.emplace_back(a.as<double>());
+            else if (a.is<bool>())
+                pv.emplace_back(a.as<bool>());
+            else if (a.is<std::string>())
+                pv.emplace_back(a.as<std::string>());
+        }
+    }
+    return json(std::move(pv));
+}
+
 void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
     auto& lua         = script->lua();
     auto& log_watches = script->log_watches();
     auto& timers      = script->timers();
+
+    WaitableGuarded<std::deque<RpcRequest>>  requests;
+    WaitableGuarded<std::deque<RpcResponse>> responses;
+    int                                      next_rpc_id = 0;
+    std::vector<PendingCoroutine>            pending;
+
+    script->set_pending(&pending);
+
+    std::thread rpc_thread(&SlowBlocksTab::rpc_thread_fn, this,
+                           std::ref(requests), std::ref(responses));
 
     // Open debug.log, seek back by max backlog
     int64_t max_backlog = 0;
@@ -292,7 +380,6 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         live_pos = logfile.tellg();
         if (max_backlog > 0 && live_pos > max_backlog) {
             logfile.seekg(live_pos - max_backlog);
-            // Skip to next newline to avoid partial line
             std::string discard;
             std::getline(logfile, discard);
         }
@@ -300,14 +387,46 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
 
     auto wake_ui = [this] { screen_.PostEvent(ftxui::Event::Custom); };
 
+    auto submit_rpc = [&](const std::string& method, json params) -> int {
+        int id = ++next_rpc_id;
+        requests.update_and_notify([&](auto& q) {
+            q.push_back({id, method, std::move(params)});
+        });
+        return id;
+    };
+
+    // Resume a coroutine with a value. If it yields another RPC,
+    // submit that and return the new rpc_id. If it finishes,
+    // return nullopt (caller reschedules timer).
+    auto resume_coro = [&](PendingCoroutine& pc, sol::object value) -> std::optional<int> {
+        auto result = pc.coro(value);
+        while (pc.coro.status() == sol::call_status::yielded) {
+            std::string tag = result;
+            if (tag == "rpc" && result.return_count() >= 2) {
+                std::string method = result.get<std::string>(1);
+                if (!rpc_allowlist_.contains(method)) {
+                    result = pc.coro(sol::nil, "RPC method not allowed: " + method);
+                    continue;
+                }
+                return submit_rpc(method, extract_rpc_params(result));
+            } else {
+                break;
+            }
+        }
+        if (!result.valid()) {
+            sol::error err = result;
+            report_error(std::string("error: ") + err.what());
+        }
+        return std::nullopt;
+    };
+
     std::string line;
     while (running_) {
-        // Read new log lines, feed to Lua callbacks
+        // 1. Read new log lines, feed to Lua callbacks
         if (logfile) {
             while (std::getline(logfile, line)) {
                 int64_t cur_pos         = logfile.tellg();
                 int64_t bytes_from_live = std::max(int64_t{0}, live_pos - cur_pos);
-                // Parse timestamp and split into (timestamp, message)
                 static const RE2 re_ts_msg(
                     R"(^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z (.*)$)");
                 std::string y, mo, d, h, mi, s, frac, msg;
@@ -356,7 +475,28 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             logfile.clear();
         }
 
-        // Fire due timers (as coroutines, handling RPC yields)
+        // 2. Collect RPC responses and resume waiting coroutines
+        auto resp_queue = responses.update([](auto& q) { return std::exchange(q, {}); });
+        for (auto& resp : resp_queue) {
+            auto it = std::find_if(pending.begin(), pending.end(),
+                [&](auto& pc) { return pc.rpc_id == resp.id; });
+            if (it == pending.end()) continue;
+
+            sol::object value = resp.error.empty()
+                ? script->json_to_lua(resp.result)
+                : sol::make_object(lua, sol::nil);
+
+            auto new_rpc_id = resume_coro(*it, value);
+            if (new_rpc_id) {
+                it->rpc_id = *new_rpc_id;
+            } else {
+                auto next = it->wake_pending ? TimePoint::min() : Clock::now() + it->timer_interval;
+                timers.insert({next, {it->timer_id, it->timer_interval, std::move(it->timer_callback)}});
+                pending.erase(it);
+            }
+        }
+
+        // 3. Fire due timers
         auto now = Clock::now();
         while (!timers.empty() && timers.begin()->first <= now) {
             auto  node  = timers.extract(timers.begin());
@@ -366,59 +506,45 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             sol::coroutine coro(thread.state(), timer.callback);
 
             auto result = coro();
-            while (coro.status() == sol::call_status::yielded) {
-                // Extract RPC request from yielded values
+            if (coro.status() == sol::call_status::yielded) {
                 std::string tag = result;
                 if (tag == "rpc" && result.return_count() >= 2) {
                     std::string method = result.get<std::string>(1);
                     if (!rpc_allowlist_.contains(method)) {
                         result = coro(sol::nil, "RPC method not allowed: " + method);
-                        continue;
+                    } else {
+                        int rpc_id = submit_rpc(method, extract_rpc_params(result));
+                        pending.push_back({
+                            std::move(thread), std::move(coro),
+                            timer.id, timer.interval, std::move(timer.callback),
+                            rpc_id
+                        });
+                        now = Clock::now();
+                        continue; // timer NOT rescheduled yet
                     }
-                    std::vector<json> pv;
-                    if (result.return_count() >= 3) {
-                        sol::table args = result.get<sol::table>(2);
-                        for (size_t i = 1; i <= args.size(); ++i) {
-                            sol::object a = args[i];
-                            if (a.is<int64_t>())
-                                pv.emplace_back(a.as<int64_t>());
-                            else if (a.is<double>())
-                                pv.emplace_back(a.as<double>());
-                            else if (a.is<bool>())
-                                pv.emplace_back(a.as<bool>());
-                            else if (a.is<std::string>())
-                                pv.emplace_back(a.as<std::string>());
-                        }
-                    }
-                    json params(std::move(pv));
-                    try {
-                        RpcClient rpc(cfg_, auth_);
-                        json      rpc_response = rpc.call(method, params);
-                        result                 = coro(script->json_to_lua(rpc_response["result"]));
-                    } catch (const std::exception& e) {
-                        result = coro(sol::nil, std::string(e.what()));
-                    }
-                } else {
-                    break; // unknown yield tag
                 }
             }
             if (!result.valid()) {
                 sol::error err = result;
                 report_error(std::string("error: ") + err.what());
             }
-
             now        = Clock::now();
             node.key() = std::max(now, node.key() + timer.interval);
             timers.insert(std::move(node));
         }
 
+        // 4. Wake UI
         wake_ui();
-        if (!timers.empty()) {
-            std::this_thread::sleep_until(std::max(timers.begin()->first, Clock::now()));
-        } else {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+
+        // 5. Sleep — wait for RPC response or next timer, cap at 1s for log polling
+        auto deadline = Clock::now() + std::chrono::seconds(1);
+        if (!timers.empty()) deadline = std::min(deadline, timers.begin()->first);
+        responses.wait_until(deadline, [](auto& q) { return !q.empty(); });
     }
+
+    // Shutdown: wake rpc thread so it sees !running_
+    requests.notify();
+    rpc_thread.join();
 }
 
 SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
