@@ -14,41 +14,41 @@
 ---   columns   ColumnDef[]  Column definitions (required)
 ---@param opts TableOpts
 ---@return Table
-function tui_table(opts) end
+function btcui_table(opts) end
 
 --- Register a periodic timer callback. The callback runs as a
---- coroutine — tui_rpc() yields transparently within it.
---- Returns an opaque TimerHandle that can be passed to tui_wake().
+--- coroutine — btcui_rpc() yields transparently within it.
+--- Returns an opaque TimerHandle that can be passed to btcui_wake().
 ---@param seconds number   Interval in seconds
 ---@param callback function  Called each interval
 ---@return TimerHandle
-function tui_set_interval(seconds, callback) end
+function btcui_set_interval(seconds, callback) end
 
 --- Wake a timer so it fires on the next loop iteration, regardless
 --- of its normal interval. If the timer's callback is currently
 --- running (waiting for an RPC), the wake is deferred until the
 --- current invocation finishes.
 ---@param handle TimerHandle
-function tui_wake(handle) end
+function btcui_wake(handle) end
 
 --- Set the tab name displayed in the tab bar. Can only be called
 --- during script loading (top-level code); calling it from a
 --- callback raises an error. The name takes effect immediately,
 --- so it persists even if the script fails to load.
 ---@param name string
-function tui_set_name(name) end
+function btcui_set_name(name) end
 
 --- Register a log pattern callback. The pattern uses RE2 syntax and
 --- is matched against the message portion of each debug.log line.
 --- Callback receives (timestamp, message, capture1, capture2, ...).
---- Log callbacks are plain function calls — they cannot call tui_rpc().
+--- Log callbacks are plain function calls — they cannot call btcui_rpc().
 ---@param pattern string           RE2 pattern (capture groups become extra args)
 ---@param callback function        fn(ts, msg, ...)
 ---@param backlog? integer         Bytes of historical log to process (default: 0)
-function tui_watch_log(pattern, callback, backlog) end
+function btcui_watch_log(pattern, callback, backlog) end
 
 --- Call a Bitcoin Core RPC method. Can only be called from within a
---- tui_set_interval callback (yields the coroutine). The RPC is
+--- btcui_set_interval callback (yields the coroutine). The RPC is
 --- dispatched to a background thread, so other timers and log
 --- callbacks continue to run while waiting. Returns the parsed
 --- JSON result directly. On RPC error, raises a Lua error (catchable
@@ -56,22 +56,22 @@ function tui_watch_log(pattern, callback, backlog) end
 ---@param method string   RPC method name (must be in the allowlist)
 ---@param ... any         Method parameters
 ---@return any
-function tui_rpc(method, ...) end
+function btcui_rpc(method, ...) end
 
 --- Set the status line hint text (displayed in the tab bar).
 ---@param text string
-function tui_key_hint(text) end
+function btcui_key_hint(text) end
 
 --- Display a warning message in the ERRORS pane. The message includes
 --- the caller's source location and ages out after 20 seconds.
 ---@param msg string
-function tui_error(msg) end
+function btcui_error(msg) end
 
 ----------------------------------------------------------------------
 -- Timer handle
 ----------------------------------------------------------------------
 
---- Opaque handle returned by tui_set_interval, used with tui_wake.
+--- Opaque handle returned by btcui_set_interval, used with btcui_wake.
 ---@class TimerHandle
 
 ----------------------------------------------------------------------
@@ -159,7 +159,7 @@ function Table:set_header_info(info) end
 -- RPC allowlist
 ----------------------------------------------------------------------
 
---- The following read-only RPC methods are permitted via tui_rpc():
+--- The following read-only RPC methods are permitted via btcui_rpc():
 ---
 --- Blockchain:
 ---   getbestblockhash, getblock, getblockchaininfo, getblockcount,

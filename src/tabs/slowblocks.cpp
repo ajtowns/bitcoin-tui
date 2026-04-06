@@ -150,7 +150,7 @@ LuaScript::LuaScript() {
     lua_.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math,
                         sol::lib::coroutine);
     lua_.script(R"(
-        function tui_rpc(method, ...)
+        function btcui_rpc(method, ...)
             local result, err = coroutine.yield('rpc', method, {...})
             if err then error(err, 2) end
             return result
@@ -188,7 +188,7 @@ void LuaScript::wake(const TimerHandle& h) {
             }
         }
     }
-    throw std::runtime_error("tui_wake: invalid timer handle");
+    throw std::runtime_error("btcui_wake: invalid timer handle");
 }
 
 sol::protected_function_result LuaScript::load(const std::string& script_path) {
@@ -269,7 +269,7 @@ CellData LuaScript::to_key(LuaTable& self, const sol::object& v) {
 void SlowBlocksTab::register_lua_api(LuaScript& script) {
     auto& lua_ = script.lua();
 
-    lua_["tui_error"] = [&script](sol::this_state ts, const std::string& msg) {
+    lua_["btcui_error"] = [&script](sol::this_state ts, const std::string& msg) {
         script.add_warning(lua_source_id(ts.L), msg);
     };
     lua_.new_usertype<LuaTable>(
@@ -304,13 +304,13 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
             self.set_header_info(LuaScript::to_cell_value(ColumnType::String, -1, v));
         });
 
-    lua_["tui_watch_log"] = [&script](const std::string& pattern, sol::protected_function fn,
+    lua_["btcui_watch_log"] = [&script](const std::string& pattern, sol::protected_function fn,
                                       sol::optional<int64_t> backlog) {
         auto src = lua_source_id(fn.lua_state());
         script.add_log_watch(pattern, std::move(fn), std::move(src), backlog.value_or(0));
     };
 
-    lua_["tui_table"] = [this](sol::table opts) -> std::shared_ptr<LuaTable> {
+    lua_["btcui_table"] = [this](sol::table opts) -> std::shared_ptr<LuaTable> {
         sol::table             col_defs = opts["columns"];
         std::vector<ColumnDef> cols;
         for (size_t i = 1; i <= col_defs.size(); ++i) {
@@ -335,24 +335,24 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
         return tbl;
     };
 
-    lua_["tui_key_hint"] = [this](const std::string& hint) {
+    lua_["btcui_key_hint"] = [this](const std::string& hint) {
         sb_state_.update([&](auto& st) { st.lua_status = hint; });
     };
 
     lua_.new_usertype<TimerHandle>("TimerHandle", sol::no_constructor);
 
-    lua_["tui_set_interval"] = [&script](double secs, sol::protected_function fn) -> TimerHandle {
+    lua_["btcui_set_interval"] = [&script](double secs, sol::protected_function fn) -> TimerHandle {
         auto src      = lua_source_id(fn.lua_state());
         auto interval =
             std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(secs));
         return script.add_timer(interval, std::move(fn), std::move(src));
     };
 
-    lua_["tui_wake"] = [&script](const TimerHandle& h) {
+    lua_["btcui_wake"] = [&script](const TimerHandle& h) {
         script.wake(h);
     };
 
-    lua_["tui_set_name"] = [this](const std::string& name) {
+    lua_["btcui_set_name"] = [this](const std::string& name) {
         sb_state_.update([&](auto& st) { st.tab_name = name; });
     };
 }
@@ -636,8 +636,8 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
         });
         return;
     }
-    script->lua()["tui_set_name"] = [](const std::string&) {
-        throw std::runtime_error("tui_set_name() can only be called during script loading");
+    script->lua()["btcui_set_name"] = [](const std::string&) {
+        throw std::runtime_error("btcui_set_name() can only be called during script loading");
     };
     lua_thread_ = std::thread(&SlowBlocksTab::lua_thread_fn, this, std::move(script));
 }

@@ -24,7 +24,7 @@ struct LuaError {
 
 struct SlowBlocksState {
     std::string  lua_status; // status output from Lua
-    std::string  tab_name;   // set by tui_set_name()
+    std::string  tab_name;   // set by btcui_set_name()
     LuaTableVec  lua_tables;
     std::optional<LuaError> init_error;      // script load failure
     std::map<int, LuaError> callback_errors; // keyed by timer/watch id

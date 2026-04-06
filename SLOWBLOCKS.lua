@@ -1,4 +1,4 @@
-tui_set_name("Slow Blocks")
+btcui_set_name("Slow Blocks")
 
 -- Constants
 local TIP_DEPTH = 10000
@@ -39,7 +39,7 @@ end
 -- Tables
 ----------------------------------------------------------------------
 
-local block_table = tui_table({
+local block_table = btcui_table({
     key = "seq",
     title = "Recent Blocks (lua)",
     columns = {
@@ -55,7 +55,7 @@ local block_table = tui_table({
     },
 })
 
-local tip_table = tui_table({
+local tip_table = btcui_table({
     key = "seq",
     title = "Recent Chain Tips",
     no_header = true,
@@ -67,7 +67,7 @@ local tip_table = tui_table({
     },
 })
 
-local log_table = tui_table({
+local log_table = btcui_table({
     key = "seq",
     title = "Log Watcher",
     columns = {
@@ -148,8 +148,8 @@ local function tip_codes(chaintips, tips)
     return codes
 end
 
-local tips_timer = tui_set_interval(30, function()
-    local chaintips = tui_rpc("getchaintips")
+local tips_timer = btcui_set_interval(30, function()
+    local chaintips = btcui_rpc("getchaintips")
     if not chaintips then return end
 
     local tips = {}
@@ -203,7 +203,7 @@ end)
 -- Enrich timer: fill in missing block data via RPC
 ----------------------------------------------------------------------
 
-tui_set_interval(1, function()
+btcui_set_interval(1, function()
     -- Prune blocks well below display depth
     if cached_active_height > 0 and #block_order > BLOCK_TRACK_DEPTH then
         local cutoff = cached_active_height - BLOCK_TRACK_DEPTH
@@ -223,11 +223,11 @@ tui_set_interval(1, function()
     for _, hash in ipairs(block_order) do
         local b = blocks[hash]
         if b and not b.prev then
-            local hdr = tui_rpc("getblockheader", hash)
+            local hdr = btcui_rpc("getblockheader", hash)
             if hdr then b.prev = hdr.previousblockhash end
         end
         if b and not b.size then
-            local blk = tui_rpc("getblock", hash, 1)
+            local blk = btcui_rpc("getblock", hash, 1)
             if blk and blk.size then b.size = blk.size / 1000; b.tx_count = blk.nTx end
         end
     end
@@ -237,7 +237,7 @@ end)
 -- Display timer: refresh block table from cached data (no RPCs)
 ----------------------------------------------------------------------
 
-tui_set_interval(1, function()
+btcui_set_interval(1, function()
     if cached_active_height == 0 then return end
     local codes = tip_codes(cached_chaintips, cached_tips)
 
@@ -285,13 +285,13 @@ end)
 
 local BACKLOG = 2 * 1024 * 1024
 
-tui_watch_log("Saw new (cmpctblock )?header hash=(\\w+) height=(\\d+)", function(ts, msg, compact, hash, height)
+btcui_watch_log("Saw new (cmpctblock )?header hash=(\\w+) height=(\\d+)", function(ts, msg, compact, hash, height)
     local b = get_or_create_block(ts, hash)
     b.height = tonumber(height)
     b.compact = (compact ~= "")
 end, BACKLOG)
 
-tui_watch_log("Successfully reconstructed block (\\w+) with (\\d+) txn prefilled, (\\d+) txn from mempool \\(incl at least \\d+ from extra pool\\) and (\\d+) txn", function(ts, msg, hash, prefilled, from_mempool, requested)
+btcui_watch_log("Successfully reconstructed block (\\w+) with (\\d+) txn prefilled, (\\d+) txn from mempool \\(incl at least \\d+ from extra pool\\) and (\\d+) txn", function(ts, msg, hash, prefilled, from_mempool, requested)
     local b = get_or_create_block(ts, hash)
     if not b.time_block then
         b.time_block = ts
@@ -300,16 +300,16 @@ tui_watch_log("Successfully reconstructed block (\\w+) with (\\d+) txn prefilled
     end
 end, BACKLOG)
 
-tui_watch_log("received block (\\w+) peer=", function(ts, msg, hash)
+btcui_watch_log("received block (\\w+) peer=", function(ts, msg, hash)
     local b = get_or_create_block(ts, hash)
     if not b.time_block then b.time_block = ts end
 end, BACKLOG)
 
-tui_watch_log("- Connect block: ([0-9.]+)ms", function(ts, msg, elapsed)
+btcui_watch_log("- Connect block: ([0-9.]+)ms", function(ts, msg, elapsed)
     pending_connect_secs = tonumber(elapsed) / 1000.0
 end, BACKLOG)
 
-tui_watch_log("UpdateTip: new best=(\\w+) height=(\\d+)", function(ts, msg, hash, height)
+btcui_watch_log("UpdateTip: new best=(\\w+) height=(\\d+)", function(ts, msg, hash, height)
     local h = tonumber(height)
     local b = get_or_create_block(ts, hash)
     if not b.height then b.height = h end
@@ -319,7 +319,7 @@ tui_watch_log("UpdateTip: new best=(\\w+) height=(\\d+)", function(ts, msg, hash
         b.validation_secs = pending_connect_secs
         pending_connect_secs = nil
     end
-    tui_wake(tips_timer)
+    btcui_wake(tips_timer)
 end, BACKLOG)
 
 ----------------------------------------------------------------------
@@ -330,7 +330,7 @@ local LOG_BACKLOG = 5000
 local LOG_LINES = 10
 
 local log_seq = 0
-tui_watch_log("^", function(ts, msg)
+btcui_watch_log("^", function(ts, msg)
     log_seq = log_seq + 1
     log_table:set_header_info( { value = "[lines=" .. tostring(log_seq) .. "]", color = "gray" })
     log_table:update(log_seq, { timestamp = ts, msg = msg })
