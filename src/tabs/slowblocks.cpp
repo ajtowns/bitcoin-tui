@@ -148,7 +148,13 @@ class LuaScript {
 LuaScript::LuaScript() {
     lua_.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table, sol::lib::math,
                         sol::lib::coroutine);
-    lua_.script("function tui_rpc(method, ...) return coroutine.yield('rpc', method, {...}) end");
+    lua_.script(R"(
+        function tui_rpc(method, ...)
+            local result, err = coroutine.yield('rpc', method, {...})
+            if err then error(err, 2) end
+            return result
+        end
+    )");
 }
 
 void LuaScript::add_log_watch(const std::string& pattern, sol::protected_function fn,
@@ -432,8 +438,8 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
     // Resume a coroutine with a value. If it yields another RPC,
     // submit that and return the new rpc_id. If it finishes,
     // return nullopt (caller reschedules timer).
-    auto resume_coro = [&](PendingCoroutine& pc, sol::object value) -> std::optional<int> {
-        auto result = pc.coro(value);
+    auto resume_coro = [&](PendingCoroutine& pc, sol::object value, sol::object err) -> std::optional<int> {
+        auto result = pc.coro(value, err);
         while (pc.coro.status() == sol::call_status::yielded) {
             std::string tag = result;
             if (tag == "rpc" && result.return_count() >= 2) {
@@ -527,8 +533,11 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
             sol::object value = resp.error.empty()
                 ? script->json_to_lua(resp.result)
                 : sol::make_object(lua, sol::nil);
+            sol::object err = resp.error.empty()
+                ? sol::make_object(lua, sol::nil)
+                : sol::make_object(lua, resp.error);
 
-            auto new_rpc_id = resume_coro(*it, value);
+            auto new_rpc_id = resume_coro(*it, value, err);
             if (new_rpc_id) {
                 it->rpc_id = *new_rpc_id;
             } else {

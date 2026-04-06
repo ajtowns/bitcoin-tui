@@ -1,9 +1,5 @@
 # Lua Tabs — TODO
 
-## Error handling
-- Error pane: auto-display callback errors keyed by callback, auto-clear on success
-- Fix `pcall` + coroutine yield interaction (currently returns `true, nil` on RPC error)
-
 ## Table features
 - Epoch-based refresh: `start_refresh()` before update loop, auto-sweep stale rows after
 - Extra header info per table next to header (e.g. log status, line count)

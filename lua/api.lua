@@ -50,7 +50,8 @@ function tui_watch_log(pattern, callback, backlog) end
 --- tui_set_interval callback (yields the coroutine). The RPC is
 --- dispatched to a background thread, so other timers and log
 --- callbacks continue to run while waiting. Returns the parsed
---- JSON result directly, or nil on error.
+--- JSON result directly. On RPC error, raises a Lua error (catchable
+--- with pcall/xpcall).
 ---@param method string   RPC method name (must be in the allowlist)
 ---@param ... any         Method parameters
 ---@return any
@@ -59,6 +60,11 @@ function tui_rpc(method, ...) end
 --- Set the status line hint text (displayed in the tab bar).
 ---@param text string
 function tui_key_hint(text) end
+
+--- Display a warning message in the ERRORS pane. The message includes
+--- the caller's source location and ages out after 20 seconds.
+---@param msg string
+function tui_error(msg) end
 
 ----------------------------------------------------------------------
 -- Timer handle
