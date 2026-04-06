@@ -24,7 +24,7 @@
 #include "tabs/mempool.hpp"
 #include "tabs/network.hpp"
 #include "tabs/peers.hpp"
-#include "tabs/slowblocks.hpp"
+#include "tabs/luatab.hpp"
 #include "tabs/tools.hpp"
 
 // ============================================================================
@@ -263,9 +263,9 @@ int Application::run() const {
     std::string debug_log = debug_log_file.empty()
                                ? datadir + "/" + network_subdir(network) + "debug.log"
                                : debug_log_file;
-    std::vector<std::unique_ptr<SlowBlocksTab>> lua_tab_ptrs;
+    std::vector<std::unique_ptr<LuaTab>> lua_tab_ptrs;
     for (const auto& script : lua_tabs) {
-        lua_tab_ptrs.push_back(std::make_unique<SlowBlocksTab>(
+        lua_tab_ptrs.push_back(std::make_unique<LuaTab>(
             cfg, auth, screen, running, state, refresh_secs, debug_log, script));
     }
 

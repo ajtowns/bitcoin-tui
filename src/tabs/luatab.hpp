@@ -22,7 +22,7 @@ struct LuaError {
     std::chrono::system_clock::time_point  when;
 };
 
-struct SlowBlocksState {
+struct LuaTabState {
     std::string  lua_status; // status output from Lua
     std::string  tab_name;   // set by btcui_set_name()
     LuaTableVec  lua_tables;
@@ -35,12 +35,12 @@ class LuaScript;
 struct RpcRequest;
 struct RpcResponse;
 
-class SlowBlocksTab : public Tab {
+class LuaTab : public Tab {
   public:
-    SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
+    LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ftxui::ScreenInteractive& screen,
                   std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
                   std::string debug_log_path, std::string lua_script);
-    ~SlowBlocksTab() override = default;
+    ~LuaTab() override = default;
 
     std::string    name() const override;
     ftxui::Element render(const AppState& snap) override;
@@ -57,6 +57,6 @@ class SlowBlocksTab : public Tab {
 
     const std::string           debug_log_path_;
     const std::set<std::string> rpc_allowlist_;
-    Guarded<SlowBlocksState>    sb_state_;
+    Guarded<LuaTabState>        lua_tab_state_;
     std::thread                 lua_thread_;
 };

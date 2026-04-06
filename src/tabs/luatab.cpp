@@ -1,4 +1,4 @@
-#include "slowblocks.hpp"
+#include "luatab.hpp"
 
 #include <chrono>
 #include <fstream>
@@ -266,7 +266,7 @@ CellData LuaScript::to_key(LuaTable& self, const sol::object& v) {
     return to_cell_data(self.key_type(), -1, v);
 }
 
-void SlowBlocksTab::register_lua_api(LuaScript& script) {
+void LuaTab::register_lua_api(LuaScript& script) {
     auto& lua_ = script.lua();
 
     lua_["btcui_error"] = [&script](sol::this_state ts, const std::string& msg) {
@@ -331,12 +331,12 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
         bool        no_header  = opts.get_or("no_header", false);
         auto        tbl =
             std::make_shared<LuaTable>(key_column, std::move(cols), std::move(title), no_header);
-        sb_state_.update([&](auto& st) { st.lua_tables.push_back(tbl); });
+        lua_tab_state_.update([&](auto& st) { st.lua_tables.push_back(tbl); });
         return tbl;
     };
 
     lua_["btcui_key_hint"] = [this](const std::string& hint) {
-        sb_state_.update([&](auto& st) { st.lua_status = hint; });
+        lua_tab_state_.update([&](auto& st) { st.lua_status = hint; });
     };
 
     lua_.new_usertype<TimerHandle>("TimerHandle", sol::no_constructor);
@@ -353,11 +353,11 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
     };
 
     lua_["btcui_set_name"] = [this](const std::string& name) {
-        sb_state_.update([&](auto& st) { st.tab_name = name; });
+        lua_tab_state_.update([&](auto& st) { st.tab_name = name; });
     };
 }
 
-void SlowBlocksTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>& requests,
+void LuaTab::rpc_thread_fn(WaitableGuarded<std::deque<RpcRequest>>& requests,
                                   WaitableGuarded<std::deque<RpcResponse>>& responses) {
     while (running_) {
         auto req = requests.access_when(
@@ -403,7 +403,7 @@ static json extract_rpc_params(const sol::protected_function_result& result) {
     return json(std::move(pv));
 }
 
-void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
+void LuaTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
     auto& lua         = script->lua();
     auto& log_watches = script->log_watches();
     auto& timers      = script->timers();
@@ -415,7 +415,7 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
 
     script->set_pending(&pending);
 
-    std::thread rpc_thread(&SlowBlocksTab::rpc_thread_fn, this,
+    std::thread rpc_thread(&LuaTab::rpc_thread_fn, this,
                            std::ref(requests), std::ref(responses));
 
     // Open debug.log, seek back by max backlog
@@ -600,7 +600,7 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
         // 4. Flush warnings into shared state, expire old ones
         auto& warns = script->warnings();
         auto  cutoff = Clock::now() - std::chrono::seconds(20);
-        sb_state_.update([&](auto& st) {
+        lua_tab_state_.update([&](auto& st) {
             for (auto& w : warns) st.warnings.push_back(std::move(w));
             std::erase_if(st.warnings, [&](const auto& w) { return w.when < cutoff; });
         });
@@ -620,18 +620,18 @@ void SlowBlocksTab::lua_thread_fn(std::unique_ptr<LuaScript> script) {
     rpc_thread.join();
 }
 
-SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
+LuaTab::LuaTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenInteractive& screen,
                              std::atomic<bool>& running, Guarded<AppState>& state, int refresh_secs,
                              std::string debug_log_path, std::string lua_script)
     : Tab(std::move(cfg), auth, screen, running, state, refresh_secs),
       debug_log_path_(std::move(debug_log_path)), rpc_allowlist_(DEFAULT_RPC_ALLOWLIST) {
     auto script = std::make_unique<LuaScript>();
-    sb_state_.update([&](auto& st) { st.tab_name = lua_script; });
+    lua_tab_state_.update([&](auto& st) { st.tab_name = lua_script; });
     register_lua_api(*script);
     auto result = script->load(lua_script);
     if (!result.valid()) {
         sol::error err = result;
-        sb_state_.update([&](auto& st) {
+        lua_tab_state_.update([&](auto& st) {
             st.init_error = LuaError{lua_script, err.what(), Clock::now()};
         });
         return;
@@ -639,23 +639,23 @@ SlowBlocksTab::SlowBlocksTab(RpcConfig cfg, Guarded<RpcAuth>& auth, ScreenIntera
     script->lua()["btcui_set_name"] = [](const std::string&) {
         throw std::runtime_error("btcui_set_name() can only be called during script loading");
     };
-    lua_thread_ = std::thread(&SlowBlocksTab::lua_thread_fn, this, std::move(script));
+    lua_thread_ = std::thread(&LuaTab::lua_thread_fn, this, std::move(script));
 }
 
-std::string SlowBlocksTab::name() const {
-    return sb_state_.access([](const auto& s) { return s.tab_name; });
+std::string LuaTab::name() const {
+    return lua_tab_state_.access([](const auto& s) { return s.tab_name; });
 }
 
-void SlowBlocksTab::report_callback_error(int id, const std::string& source_id, const std::string& msg) {
-    sb_state_.update([&](auto& st) { st.callback_errors[id] = {source_id, msg, Clock::now()}; });
+void LuaTab::report_callback_error(int id, const std::string& source_id, const std::string& msg) {
+    lua_tab_state_.update([&](auto& st) { st.callback_errors[id] = {source_id, msg, Clock::now()}; });
 }
 
-void SlowBlocksTab::clear_callback_error(int id) {
-    sb_state_.update([&](auto& st) { st.callback_errors.erase(id); });
+void LuaTab::clear_callback_error(int id) {
+    lua_tab_state_.update([&](auto& st) { st.callback_errors.erase(id); });
 }
 
-Element SlowBlocksTab::key_hints(const AppState& snap) const {
-    auto lua_str = sb_state_.access([](const auto& s) { return s.lua_status; });
+Element LuaTab::key_hints(const AppState& snap) const {
+    auto lua_str = lua_tab_state_.access([](const auto& s) { return s.lua_status; });
     return hbox({text("  " + lua_str) | color(Color::Cyan), refresh_indicator(snap),
                  text("  [Tab/\u2190/\u2192] switch  [q] quit ") | color(Color::GrayDark)});
 }
@@ -672,10 +672,10 @@ static Element apply_style(Element el, const CellValue& cv) {
     return el;
 }
 
-Element SlowBlocksTab::render(const AppState& /*snap*/) {
+Element LuaTab::render(const AppState& /*snap*/) {
     // Lua tables
     Elements lua_panels;
-    auto     tables = sb_state_.access([](const auto& s) { return s.lua_tables; });
+    auto     tables = lua_tab_state_.access([](const auto& s) { return s.lua_tables; });
     for (const auto& tbl : tables) {
         const auto& cols  = tbl->columns();
         size_t      ncols = cols.size();
@@ -822,7 +822,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
 
     Elements panels;
 
-    auto [init_err, errors, warnings] = sb_state_.access(
+    auto [init_err, errors, warnings] = lua_tab_state_.access(
         [](const auto& s) { return std::make_tuple(s.init_error, s.callback_errors, s.warnings); });
     if (init_err || !errors.empty() || !warnings.empty()) {
         auto format_entry = [](Elements& rows, const LuaError& err) {
@@ -862,7 +862,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
     return vbox(panels) | flex;
 }
 
-void SlowBlocksTab::join() {
+void LuaTab::join() {
     if (lua_thread_.joinable())
         lua_thread_.join();
 }
