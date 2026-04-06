@@ -1,8 +1,5 @@
 # Lua Tabs — TODO
 
-## Table features
-- Extra header info per table next to header (e.g. log status, line count)
-
 ## Log watching
 - Structured LogEntry: parse level/category from bracket prefix (e.g. `[net]`, `[error]`)
 

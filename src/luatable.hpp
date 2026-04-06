@@ -49,6 +49,7 @@ struct RowCompare {
 struct RowData {
     std::set<Row, RowCompare> rows;
     int current_epoch{0};
+    CellValue header_info;
 };
 
 class LuaTable {
@@ -60,6 +61,7 @@ class LuaTable {
     bool remove(const CellData& key);
     void start_refresh();
     void finish_refresh();
+    void set_header_info(CellValue info);
 
     std::vector<std::string> keys() const;
 
@@ -73,6 +75,10 @@ class LuaTable {
     // Thread-safe access to rows
     template <typename F> auto access(F&& f) const {
         return rows_.access([&](const auto& rd) { return f(rd.rows); });
+    }
+
+    CellValue header_info() const {
+        return rows_.access([](const auto& rd) { return rd.header_info; });
     }
 
   private:

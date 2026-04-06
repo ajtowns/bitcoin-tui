@@ -332,6 +332,7 @@ local LOG_LINES = 10
 local log_seq = 0
 tui_watch_log("^", function(ts, msg)
     log_seq = log_seq + 1
+    log_table:set_header_info( { value = "[lines=" .. tostring(log_seq) .. "]", color = "gray" })
     log_table:update(log_seq, { timestamp = ts, msg = msg })
     local old = log_seq - LOG_LINES
     while log_table:remove(old) do old = old - 1 end

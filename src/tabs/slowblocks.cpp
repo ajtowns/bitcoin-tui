@@ -127,8 +127,9 @@ class LuaScript {
 
     sol::object json_to_lua(const json& j);
 
-    static CellData to_cell_data(ColumnType type, int decimals, const sol::object& v);
-    static CellData to_key(LuaTable& self, const sol::object& v);
+    static CellData  to_cell_data(ColumnType type, int decimals, const sol::object& v);
+    static CellValue to_cell_value(ColumnType type, int decimals, const sol::object& v);
+    static CellData  to_key(LuaTable& self, const sol::object& v);
 
     std::vector<LuaError>& warnings() { return warnings_; }
 
@@ -248,6 +249,19 @@ CellData LuaScript::to_cell_data(ColumnType type, int decimals, const sol::objec
     }
 }
 
+CellValue LuaScript::to_cell_value(ColumnType type, int decimals, const sol::object& v) {
+    CellValue cv;
+    if (v.is<sol::table>()) {
+        sol::table sv = v;
+        cv.color = sv.get_or<std::string>("color", "");
+        cv.bold  = sv.get_or("bold", false);
+        cv.data  = to_cell_data(type, decimals, sv["value"]);
+    } else {
+        cv.data = to_cell_data(type, decimals, v);
+    }
+    return cv;
+}
+
 CellData LuaScript::to_key(LuaTable& self, const sol::object& v) {
     return to_cell_data(self.key_type(), -1, v);
 }
@@ -277,15 +291,7 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
                         break;
                     }
                 }
-                if (v.is<sol::table>()) {
-                    sol::table sv = v;
-                    cv.color      = sv.get_or<std::string>("color", "");
-                    cv.bold       = sv.get_or("bold", false);
-                    cv.data       = LuaScript::to_cell_data(ct, dec, sv["value"]);
-                } else {
-                    cv.data = LuaScript::to_cell_data(ct, dec, v);
-                }
-                cells[col_name] = std::move(cv);
+                cells[col_name] = LuaScript::to_cell_value(ct, dec, v);
             }
             self.update(LuaScript::to_key(self, key), cells);
         },
@@ -293,7 +299,10 @@ void SlowBlocksTab::register_lua_api(LuaScript& script) {
         [](LuaTable& self, const sol::object& key) { return self.remove(LuaScript::to_key(self, key)); },
         "keys", &LuaTable::keys,
         "start_refresh", &LuaTable::start_refresh,
-        "finish_refresh", &LuaTable::finish_refresh);
+        "finish_refresh", &LuaTable::finish_refresh,
+        "set_header_info", [](LuaTable& self, const sol::object& v) {
+            self.set_header_info(LuaScript::to_cell_value(ColumnType::String, -1, v));
+        });
 
     lua_["tui_watch_log"] = [&script](const std::string& pattern, sol::protected_function fn,
                                       sol::optional<int64_t> backlog) {
@@ -651,6 +660,18 @@ Element SlowBlocksTab::key_hints(const AppState& snap) const {
                  text("  [Tab/\u2190/\u2192] switch  [q] quit ") | color(Color::GrayDark)});
 }
 
+static Element apply_style(Element el, const CellValue& cv) {
+    if (!cv.color.empty()) {
+        if (cv.color == "red")         el = el | color(Color::Red);
+        else if (cv.color == "green")  el = el | color(Color::Green);
+        else if (cv.color == "yellow") el = el | color(Color::Yellow);
+        else if (cv.color == "cyan")   el = el | color(Color::Cyan);
+        else if (cv.color == "gray")   el = el | color(Color::GrayDark);
+    }
+    if (cv.bold) el = el | ftxui::bold;
+    return el;
+}
+
 Element SlowBlocksTab::render(const AppState& /*snap*/) {
     // Lua tables
     Elements lua_panels;
@@ -772,21 +793,7 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
                         if (pad > 0)
                             val = std::string(pad, ' ') + val;
                     }
-                    auto el = text(prefix + val);
-                    if (!cv.color.empty()) {
-                        if (cv.color == "red")
-                            el = el | color(Color::Red);
-                        else if (cv.color == "green")
-                            el = el | color(Color::Green);
-                        else if (cv.color == "yellow")
-                            el = el | color(Color::Yellow);
-                        else if (cv.color == "cyan")
-                            el = el | color(Color::Cyan);
-                        else if (cv.color == "gray")
-                            el = el | color(Color::GrayDark);
-                    }
-                    if (cv.bold)
-                        el = el | ftxui::bold;
+                    auto el = apply_style(text(prefix + val), cv);
                     if (vi + 1 < vis.size() || ralign[vi])
                         el = el | size(WIDTH, EQUAL, widths[vi]);
                     else
@@ -798,7 +805,19 @@ Element SlowBlocksTab::render(const AppState& /*snap*/) {
         });
 
         std::string box_title = tbl->title().empty() ? "Lua Table" : tbl->title();
-        lua_panels.push_back(section_box(box_title, tbl_rows));
+        auto hi = tbl->header_info();
+        auto hi_str = format_cell(ColumnType::String, hi.data);
+        if (!hi_str.empty()) {
+            auto el = apply_style(text("  " + hi_str), hi);
+            box_title += " ";
+            tbl_rows.insert(tbl_rows.begin(), hbox({
+                text(" " + box_title + " ") | bold | color(Color::Gold1),
+                std::move(el) | flex
+            }));
+            lua_panels.push_back(vbox(std::move(tbl_rows)) | border);
+        } else {
+            lua_panels.push_back(section_box(box_title, tbl_rows));
+        }
     }
 
     Elements panels;

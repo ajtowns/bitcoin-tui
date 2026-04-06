@@ -139,6 +139,10 @@ void LuaTable::finish_refresh() {
     });
 }
 
+void LuaTable::set_header_info(CellValue info) {
+    rows_.update([&](auto& rd) { rd.header_info = std::move(info); });
+}
+
 std::vector<std::string> LuaTable::keys() const {
     return rows_.access([&](const auto& rd) {
         std::vector<std::string> result;

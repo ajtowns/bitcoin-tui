@@ -107,6 +107,12 @@ function Table:start_refresh() end
 --- start_refresh() call).
 function Table:finish_refresh() end
 
+--- Set extra info text displayed next to the table title.
+--- Accepts a plain string or a styled table { value = str, color = "...", bold = true }.
+--- Set to "" to clear.
+---@param info string|StyledValue
+function Table:set_header_info(info) end
+
 ----------------------------------------------------------------------
 -- Table options
 ----------------------------------------------------------------------
